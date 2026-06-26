@@ -17,7 +17,7 @@ SAMPLE_SEED = 42
 def _load_corpus_file(corpus_cache, corpus_dir, file_path):
 	if file_path not in corpus_cache:
 		full_path = os.path.join(corpus_dir, file_path)
-		with open(full_path, "r", encoding="utf-8-sig") as f:
+		with open(full_path, "r", encoding="utf-8-siggit branch -M main") as f:
 			corpus_cache[file_path] = f.read()
 	return corpus_cache[file_path]
 

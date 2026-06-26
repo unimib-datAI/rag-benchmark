@@ -12,9 +12,9 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 MODELLO = "gemma4:31b-cloud"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# IL SUPERBENCHMARK COMPLETO (5 Domini di test)
+# IL SUPERBENCHMARK COMPLETO
 FILES_TO_TEST = [
-    "50_Esempi_LegalBench.json", 
+    "Tutto_LEGALBENCH.json", 
     "Tutto_MULTIHOP.json", 
     "Tutto_CRAG_DAVE.json",
     "Tutto_MTRAG_DAVE.json",
@@ -110,7 +110,7 @@ def _tokenize(text: str) -> list[str]:
 _HTML_SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
-
+# Rimuove tag HTML e decodifica entità HTML, restituendo solo il testo pulito.
 def _clean_html_text(text: str) -> str:
     if not text or ("<" not in text and "&" not in text):
         return text
@@ -120,16 +120,16 @@ def _clean_html_text(text: str) -> str:
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
 
-
+# Funzioni per salvare i contesti HTML e i file di report
 def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
-
+# Rimuove caratteri non sicuri dai nomi dei file, sostituendoli con underscore.
 def _sanitize_filename(value: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", value or "").strip("_")
     return safe or "item"
 
-
+# Salviamo il contenuto in un file all'interno della directory specificata, restituendo il percorso relativo del file salvato.
 def _save_artifact(dir_path: str, item_id: str, suffix: str, content: str) -> str:
     if content is None:
         return ""
@@ -190,7 +190,7 @@ def _retrieve_top_k(question: str, docs: list[str], k: int) -> list[str]:
     top_docs = [doc for _, _, doc in scored[:k]]
     return top_docs
 
-
+# Funzione per calcolare Precision, Recall e F1-score a livello di token
 def precision_recall_f1(gold, pred):
     gold_tokens = _tokenize(gold)
     pred_tokens = _tokenize(pred)
