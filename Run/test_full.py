@@ -7,6 +7,20 @@ from datetime import datetime
 from html import unescape
 
 import requests
+import numpy as np
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception:
+    SentenceTransformer = None
+
+from sklearn.metrics.pairwise import cosine_similarity
+
+if SentenceTransformer is not None:
+    print("Caricamento del modello di embedding multilingua (può richiedere un minuto al primo avvio)...")
+    embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+else:
+    print("ATTENZIONE: sentence_transformers non è disponibile. Verrà usato un embedding casuale fittizio.")
+    embedding_model = None
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODELLO = "gemma4:31b-cloud"
@@ -93,7 +107,6 @@ def invoca_ollama(prompt: str) -> str:
     print(f"[OLLAMA ERROR] Campo 'response' mancante: {err_msg}")
     return ""
 
-# Funzione per pulire il testo e estrarre solo il JSON valido restituito dal LLM, evitando eventuali errori di formattazione o testo extra.
 def pulisci_json(testo_grezzo: str) -> str:
     match = re.search(r'\{.*\}', testo_grezzo, re.DOTALL)
     if match:
@@ -106,7 +119,6 @@ def _tokenize(text: str) -> list[str]:
         return []
     return re.findall(r"\w+", text.lower())
 
-# Le funzioni seguenti aiutano a pulire il testo HTML, gestire i file di contesto, e valutare la risposta di DAVE rispetto alla GOLD.
 _HTML_SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
@@ -171,7 +183,6 @@ def _split_context_in_docs(context):
         docs.append(" ".join(current).strip())
     return [_clean_html_text(doc) for doc in docs]
 
-# Funzione per calcolare Precision, Recall e F1-score a livello di token
 def _retrieve_top_k(question: str, docs: list[str], k: int) -> list[str]:
     if not docs:
         return []
@@ -190,24 +201,15 @@ def _retrieve_top_k(question: str, docs: list[str], k: int) -> list[str]:
     top_docs = [doc for _, _, doc in scored[:k]]
     return top_docs
 
-# Funzione per calcolare Precision, Recall e F1-score a livello di token
-def precision_recall_f1(gold, pred):
-    gold_tokens = _tokenize(gold)
-    pred_tokens = _tokenize(pred)
-    if not pred_tokens and not gold_tokens:
-        return 1.0, 1.0, 1.0
-    if not pred_tokens:
-        return 0.0, 0.0, 0.0
-    cg = Counter(gold_tokens)
-    cp = Counter(pred_tokens)
-    common = sum((cg & cp).values())
-    precision = common / sum(cp.values()) if sum(cp.values()) > 0 else 0.0
-    recall = common / sum(cg.values()) if sum(cg.values()) > 0 else 0.0
-    if precision + recall == 0:
-        f1 = 0.0
-    else:
-        f1 = 2 * (precision * recall) / (precision + recall)
-    return precision, recall, f1
+def calcola_similarita_semantica(gold: str, pred: str) -> float:
+    if not gold.strip() and not pred.strip():
+        return 1.0
+    if not gold.strip() or not pred.strip():
+        return 0.0
+        
+    embeddings = embedding_model.encode([gold, pred])
+    sim = cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]
+    return max(0.0, float(sim))
 
 
 def _build_prompt_with_history(item, memoria_conversazioni):
@@ -246,7 +248,7 @@ def _format_retrieved_docs(docs: list[str]) -> str:
     return "\n\n".join(chunks)
 
 def valuta_sistema():
-    print("🔍 Avvio Valutazione Integrale RAG e caricamento SuperBenchmark...")
+    print("Starting Full RAG Evaluation and loading SuperBenchmark...")
     dataset = []
     
     for fn in FILES_TO_TEST:
@@ -264,7 +266,7 @@ def valuta_sistema():
 
     memoria_conversazioni = {}
 
-    report_content = "# 🛡️ Valutazione Investigativa DAVE RAG\n"
+    report_content = "# DAVE RAG Evaluation Report\n"
     report_content += f"**Generato il:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
     report_content += LEGENDA_METRICHE + "\n"
 
@@ -302,14 +304,14 @@ def valuta_sistema():
                 "correctness_voto": 0.0, "correctness_perche": "N/A"
             }
 
-        precision, recall, f1 = precision_recall_f1(gold, risposta_dave)
+        semantic_sim = calcola_similarita_semantica(gold, risposta_dave)
 
         report_content += f"## 📝 Query `{item['id']}` (Sorgente: *{item['source']}*)\n"
         
         if item['source'] == 'MTRAG' and conv_id and memoria_conversazioni.get(conv_id, "").count("Utente:") > 1:
-            report_content += f"> 🗣️ **Test Conversazionale:** *Questa domanda include la storia pregressa costruita auto-regressivamente con le risposte reali di DAVE, testando il rischio di Cascading Errors.*\n\n"
+            report_content += "> **Conversational Test:** Includes conversation history to test cascading errors.\n\n"
         elif item['source'] == 'OHRBench':
-            report_content += f"> 🖨️ **Test Robustezza OCR:** *Il documento fornito contiene 'Rumore Semantico o di Formattazione'. Valutiamo la capacità di DAVE di districarsi tra gli errori del parsing visivo (es. tabelle distrutte o parole storpiate).*\n\n"
+            report_content += "> **OCR Robustness Test:** Documents contain semantic or formatting noise.\n\n"
             
         report_content += f"**Domanda dell'Utente:**\n```text\n{prompt_domanda_finale}\n```\n\n"
         
@@ -326,8 +328,8 @@ def valuta_sistema():
         report_content += "### 🤖 Risposta di DAVE vs Gold Answer\n"
         report_content += f"**DAVE:** {risposta_dave}\n\n"
         report_content += f"**GOLD:** {gold}\n\n"
-        report_content += "### 🔢 Metriche Testuali (Token-level)\n"
-        report_content += f"- Precision: `{precision:.3f}` | Recall: `{recall:.3f}` | F1-score: `{f1:.3f}`\n\n"
+        report_content += "### 🔢 Metrica Semantica (Cross-lingua)\n"
+        report_content += f"- **Semantic Similarity:** `{semantic_sim:.3f}` (valuta l'affinità di significato reale tra DAVE e GOLD)\n\n"
         
         report_content += "| Metrica | Voto | Spiegazione del Giudice |\n"
         report_content += "| :--- | :---: | :--- |\n"
@@ -338,8 +340,8 @@ def valuta_sistema():
     with open(OUTPUT_MD, "w", encoding="utf-8") as f:
         f.write(report_content)
     
-    print(f"\n🎉 VALUTAZIONE COMPLETATA CON SUCCESSO! 🎉")
-    print(f"Il referto per la tua tesi è stato salvato in: {OUTPUT_MD}")
+    print("\nEvaluation successfully completed.")
+    print(f"Report saved to: {OUTPUT_MD}")
 
 if __name__ == "__main__":
     valuta_sistema()

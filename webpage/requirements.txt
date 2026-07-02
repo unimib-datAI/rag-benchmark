@@ -1,3 +1,7 @@
 streamlit
 pandas
 requests
+sentence-transformers
+scikit-learn
+numpy
+torchvision

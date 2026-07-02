@@ -16,8 +16,7 @@ INPUT_CRAG = os.path.join(BASE_DIR, "Tutto_CRAG_DAVE.json")
 OUTPUT_REPORT = os.path.join(BASE_DIR, "Report_Classificazione.md")
 OUTPUT_IMG = os.path.join(BASE_DIR, "Grafico_Query_DAVE.png")
 
-# Prompt riformulato per non bloccare Gemma
-PROMPT_ROUTER = """Sei un assistente AI esperto in classificazione dei dati.
+ROUTER_PROMPT = """Sei un assistente esperto in classificazione dei dati.
 Il tuo compito è classificare la domanda dell'utente in UNA SOLA di queste 5 categorie:
 - Estrazione_Semplice
 - Multi_Hop
@@ -25,8 +24,8 @@ Il tuo compito è classificare la domanda dell'utente in UNA SOLA di queste 5 ca
 - Verifica_Fatti
 - Temporale
 
-Devi rispondere ESCLUSIVAMENTE fornendo un oggetto JSON, senza alcun testo introduttivo o conclusivo. Usa questa struttura esatta:
-{{"categoria": "inserisci_qui_la_categoria", "motivo": "breve spiegazione del perché"}}
+Rispondi ESCLUSIVAMENTE con un oggetto JSON:
+{{"categoria": "...", "motivo": "..."}}
 
 Domanda da classificare: "{domanda}"
 """
@@ -42,7 +41,7 @@ def get_classificazione(domanda: str) -> tuple[str, str]:
     try:
         payload = {
             "model": MODELLO,
-            "prompt": PROMPT_ROUTER.format(domanda=domanda),
+            "prompt": ROUTER_PROMPT.format(domanda=domanda),
             "stream": False,
             "temperature": 0.1,
         }
@@ -66,10 +65,10 @@ def get_classificazione(domanda: str) -> tuple[str, str]:
         return cat, mot
         
     except json.JSONDecodeError:
-        print(f"  -> ⚠️ Errore JSON. Il modello ha generato questo testo illeggibile:\n{testo_grezzo}")
+        print(f"Error parsing JSON output: {testo_grezzo}")
         return "Errore_Parsing", "N/A"
     except Exception as e:
-        print(f"  -> ⚠️ Errore di connessione/esecuzione: {e}")
+        print(f"Execution error: {e}")
         return "Errore_Tecnico", "N/A"
 
 def _load_samples(file_paths: list[str], sample_size: int) -> list[dict]:
@@ -84,7 +83,7 @@ def _load_samples(file_paths: list[str], sample_size: int) -> list[dict]:
 
 
 def genera_report():
-    print("🚀 Classificazione domande in corso...")
+    print("Starting question classification...")
     data = _load_samples([INPUT_LEGAL, INPUT_MULTIHOP, INPUT_CRAG], sample_size=10)
 
     risultati = []
@@ -106,8 +105,8 @@ def genera_report():
         f.write(f"Questo report analizza la natura delle domande poste al sistema.\n\n")
         f.write(df.to_markdown(index=False))
     
-    print(f"\n✅ Report creato con successo: {OUTPUT_REPORT}")
-    print(f"✅ Grafico salvato come: {OUTPUT_IMG}")
+    print(f"\nReport successfully created: {OUTPUT_REPORT}")
+    print(f"Chart saved to: {OUTPUT_IMG}")
 
 if __name__ == "__main__":
     genera_report()
