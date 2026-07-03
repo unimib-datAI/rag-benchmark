@@ -5,7 +5,6 @@ import re
 import requests
 import pandas as pd
 import streamlit as st
-import numpy as np
 
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -23,7 +22,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Load external CSS
+# CSS caricato
 _CSS_PATH = Path(__file__).resolve().parent / "style.css"
 if _CSS_PATH.exists():
     st.markdown(f"<style>{_CSS_PATH.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
@@ -49,28 +48,30 @@ BENCHMARK_SHORT = {
     "OHRBench": "OHRBench",
 }
 
-def _tokenize(text: str) -> list[str]:
-    if not isinstance(text, str):
-        return []
-    return re.findall(r"\w+", text.lower())
-
 def _clean_html_text(text: str) -> str:
     if not text or ("<" not in text and "&" not in text):
         return text
+    # Rimuove script e style
     cleaned = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+    # Rimuove tutti i tag HTML
     cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    # Decodifica entità HTML
     cleaned = unescape(cleaned)
+    # Normalizza spazi bianchi
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
 
 def _split_context_in_docs(context):
+    # input in forma di lista
     if isinstance(context, list):
         docs = [str(c).strip() for c in context if str(c).strip()]
         return [_clean_html_text(doc) for doc in docs]
     text = str(context or "").strip()
+    # input in forma di stringa
     if not text:
         return []
     lines = [line.strip() for line in text.splitlines() if line.strip()]
+    # Se non ci sono linee, restituisce il testo pulito come unico documento
     if not lines:
         return [_clean_html_text(text)]
     docs, current = [], []
@@ -81,6 +82,7 @@ def _split_context_in_docs(context):
             current = [line]
         else:
             current.append(line)
+    # Aggiunge l'ultimo documento se presente
     if current:
         docs.append(" ".join(current).strip())
     return [_clean_html_text(doc) for doc in docs]
@@ -127,7 +129,11 @@ def interroga_rag(endpoint: str, query: str, top_k: int, documents: list[str]) -
 def formatta_retrieved(docs):
     if not docs:
         return "Nessun documento recuperato."
-    return "".join(f"[Doc {i}]\n{d.get('text', d) if isinstance(d, dict) else str(d)}\n\n" for i, d in enumerate(docs, 1))
+    return "".join(
+        f"[Doc {i}]\n"
+        f"{d.get('text', d) if isinstance(d, dict) else str(d)}\n\n"
+        for i, d in enumerate(docs, 1)
+    )
 
 def _value_color(v: float) -> str:
     if v >= 0.7: return "green"
