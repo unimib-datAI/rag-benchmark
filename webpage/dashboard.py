@@ -44,45 +44,30 @@ def get_token_bar_html(semantic_sim: float) -> str:
 </div>"""
 
 def get_diagnostics_html(avg_r: float, avg_f: float, avg_c: float, avg_f1: float):
-    html_issues = '<div class="diag-panel issues"><h3>Problematiche rilevate</h3>'
+    html_issues = '<div class="diag-panel issues" style="height: 100%;"><h3>🔍 Analisi Euristica Avanzata</h3>'
     issues = []
-    if avg_r < 0.6:
-        issues.append("<b>Retrieval debole (< 0.60):</b> I documenti recuperati non contengono le informazioni necessarie.")
-    if avg_f < 0.7:
-        issues.append("<b>Allucinazioni (Faithfulness < 0.70):</b> Il modello genera informazioni non presenti nel contesto fornito.")
-    if avg_c < 0.5:
-        issues.append("<b>Bassa correttezza (< 0.50):</b> Le risposte non corrispondono alla Ground Truth.")
-    if avg_f1 < 0.3:
-        issues.append("<b>Bassa Similarità Semantica (< 0.30):</b> La risposta diverge semanticamente dalla Ground Truth.")
-        
-    if not issues:
-        html_issues += '<div class="diag-ok">Nessun problema critico rilevato.</div>'
-    else:
-        for iss in issues:
-            html_issues += f'<p>{iss}</p>'
-    html_issues += '</div>'
-
-    html_sols = '<div class="diag-panel solutions"><h3>Possibili soluzioni</h3>'
-    solutions = []
-    if avg_r < 0.6:
-        solutions.append("<b>Chunking:</b> Sperimenta con chunk più piccoli o sovrapposti per catturare meglio le frasi chiave.")
-        solutions.append("<b>Retriever ibrido:</b> Combina BM25 con embeddings densi (FAISS + sentence-transformers).")
-        solutions.append("<b>Reranking:</b> Aggiungi un modello di re-ranking dopo il primo retrieval.")
-    if avg_f < 0.7:
-        solutions.append("<b>System prompt:</b> Aggiungi istruzioni esplicite per limitare le risposte al solo contesto fornito.")
-        solutions.append("<b>Temperature 0.0:</b> Riduci la creatività per forzare risposte deterministiche.")
-    if avg_c < 0.5 or avg_f1 < 0.3:
-        solutions.append("<b>Risposte concise:</b> Istruisci l'LLM a rispondere in massimo 2 frasi estraendo solo l'informazione esatta.")
-        solutions.append("<b>Pulizia contesto:</b> Implementa filtri per HTML/OCR noise prima della generazione.")
-        
-    if not solutions:
-        html_sols += '<div class="diag-ok">Prestazioni stabili.</div>'
-    else:
-        for sol in solutions:
-            html_sols += f'<p>{sol}</p>'
-    html_sols += '</div>'
     
-    return html_issues, html_sols
+    if avg_r >= 0.7 and avg_c < 0.5:
+        issues.append("<b>Lost in the Middle / Debolezza LLM:</b> Il retrieval è buono (>=0.7), ma la correttezza è bassa. L'LLM sta fallendo nell'estrarre l'informazione dai documenti forniti.")
+    elif avg_r < 0.5 and avg_f >= 0.7:
+        issues.append("<b>Ricerca Fallimentare (Ma LLM Sicuro):</b> L'LLM non allucina (Faithfulness alta), ma il retriever sta fornendo i documenti sbagliati. Concentrati su embeddings o BM25.")
+    elif avg_f < 0.5 and avg_c < 0.5:
+        issues.append("<b>Allucinazione Grave:</b> Il modello ignora i documenti e inventa risposte sbagliate. Rivedi urgentemente il System Prompt e assicurati che la temperatura sia a 0.")
+    elif avg_r < 0.5 and avg_c < 0.5:
+        issues.append("<b>Collasso del Sistema:</b> Né il retrieval né la generazione funzionano bene. Inizia risolvendo la qualità dei chunk dei documenti.")
+    elif avg_f1 < 0.4 and avg_c >= 0.6:
+        issues.append("<b>Corretto ma Verboso:</b> Le risposte contengono i fatti giusti ma divergono dalla Ground Truth (bassa Similarità Semantica). Chiedi all'LLM di essere più sintetico.")
+        
+    if not issues and avg_c >= 0.8:
+        issues.append("<b>Sistema Ottimizzato:</b> Le metriche indicano un RAG stabile e performante!")
+    elif not issues:
+        issues.append("<b>Prestazioni Medie:</b> Nessun comportamento critico netto, ma c'è margine di miglioramento su tutti i fronti.")
+
+    for iss in issues:
+        html_issues += f'<p>{iss}</p>'
+    html_issues += '</div>'
+    
+    return html_issues
 
 def get_footer_html(num_reports: int, ollama_model: str, time_str: str) -> str:
     return f"""

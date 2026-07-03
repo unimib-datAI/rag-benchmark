@@ -215,6 +215,8 @@ with st.sidebar:
             st.session_state.running = True
             st.session_state.results = []
             st.session_state.selected_files = selected_files
+            if "llm_advice" in st.session_state:
+                del st.session_state.llm_advice
             st.rerun()
     else:
         if st.button("Stop valutazione", type="secondary", use_container_width=True):
@@ -372,15 +374,38 @@ if st.session_state.results:
                 st.text(rep['docs'])
 
     st.markdown('<div class="section-title">Diagnostica e soluzioni</div>', unsafe_allow_html=True)
-    col_d1, col_d2 = st.columns(2)
+    
+    worst_query = min(reports, key=lambda x: x['correctness_voto'] + x['retrieval_voto'], default=None)
+    if worst_query and "llm_advice" not in st.session_state:
+        with st.spinner("🧠 L'AI sta scrivendo il report diagnostico personalizzato..."):
+            PROMPT_EXPERT = f"""Agisci come un Architetto AI esperto di RAG.
+            Ho valutato il mio sistema RAG. Ecco le medie:
+            - Retrieval: {avg_r:.2f}
+            - Faithfulness: {avg_f:.2f}
+            - Correctness: {avg_c:.2f}
 
-    html_issues, html_sols = dash.get_diagnostics_html(avg_r, avg_f, avg_c, avg_f1)
+            Ecco la query in cui il sistema ha performato peggio:
+            DOMANDA: {worst_query['domanda']}
+            RISPOSTA RAG: {worst_query['risposta_rag']}
+            RISPOSTA IDEALE: {worst_query['gold']}
+
+            Scrivi un'analisi di massimo 4 frasi evidenziando il problema principale e dando 2 consigli tecnici concreti. Scrivi in italiano usando la formattazione Markdown."""
+            st.session_state.llm_advice = invoca_ollama(PROMPT_EXPERT, ollama_url, ollama_model)
+
+    llm_advice_text = st.session_state.get("llm_advice", "")
+    html_issues = dash.get_diagnostics_html(avg_r, avg_f, avg_c, avg_f1)
+
+    col_d1, col_d2 = st.columns(2)
 
     with col_d1:
         st.markdown(html_issues, unsafe_allow_html=True)
 
     with col_d2:
-        st.markdown(html_sols, unsafe_allow_html=True)
+        st.markdown('<div class="diag-panel solutions" style="margin-bottom: 1rem;"><h3>🤖 Il Verdetto dell\'Esperto</h3></div>', unsafe_allow_html=True)
+        if llm_advice_text:
+            st.success(llm_advice_text)
+        else:
+            st.warning("Verdetto LLM non disponibile.")
 
     # Footer
     st.markdown(dash.get_footer_html(len(reports), ollama_model, datetime.now().strftime('%d/%m/%Y %H:%M')), unsafe_allow_html=True)
