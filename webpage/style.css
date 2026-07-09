@@ -358,3 +358,87 @@ button[kind="primary"]:active {
 [data-testid="stStatusWidget"] {
     visibility: hidden !important;
 }
+
+/* ==========================================================================
+   EXPLORE TAB – Valutazioni salvate & Confronto
+   ========================================================================== */
+
+/* ── Eval Card (lista valutazioni) ── */
+.eval-card {
+    background: rgba(30, 30, 40, 0.6);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    padding: 1rem 1.4rem;
+    margin-bottom: 0.5rem;
+    transition: all 0.25s ease;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+.eval-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(108, 92, 231, 0.35);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+}
+
+.eval-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.eval-card-name {
+    color: #e0e0e0;
+    font-weight: 600;
+    font-size: 1rem;
+    letter-spacing: 0.3px;
+}
+
+.eval-card-ts {
+    color: #6c5ce7;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    font-weight: 400;
+}
+
+.eval-card-body {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.eval-card-detail {
+    color: #8b8b9e;
+    font-size: 0.88rem;
+}
+
+.eval-card-detail strong {
+    color: #cfcfd6;
+}
+
+/* ── Compare Chart Wrapper ── */
+.compare-chart {
+    background: rgba(20, 20, 30, 0.5);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 14px;
+    padding: 1.2rem;
+    margin-bottom: 1rem;
+}
+
+/* ── Badge "Migliore" ── */
+.eval-best-badge {
+    display: inline-block;
+    background: linear-gradient(135deg, rgba(0, 230, 118, 0.15) 0%, rgba(0, 230, 118, 0.08) 100%);
+    color: #00E676;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 1.1rem;
+    padding: 0.3rem 0.9rem;
+    border-radius: 20px;
+    border: 1px solid rgba(0, 230, 118, 0.3);
+    text-shadow: 0 0 8px rgba(0, 230, 118, 0.3);
+}

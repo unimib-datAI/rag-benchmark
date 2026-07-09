@@ -1,52 +1,59 @@
 def get_header_html() -> str:
+    # barra in alto con titolo
     return """
-<div class="header-bar">
-    <h1>SuperBenchmark Dashboard</h1>
-    <p>Valutazione interattiva di sistemi RAG con LLM-as-a-Judge</p>
-</div>
-"""
+    <div class="header-bar">
+        <h1>SuperBenchmark Dashboard</h1>
+        <p>Valutazione interattiva di sistemi RAG con LLM-as-a-Judge</p>
+    </div>
+    """
 
 def get_welcome_html() -> str:
+    # messaggio iniziale quando non ci sono ancora risultati
     return """
-<div class="welcome-box">
-    <h3>Nessuna valutazione eseguita</h3>
-    <p>Configura i parametri nella barra laterale e premi "Avvia valutazione" per iniziare.</p>
-</div>
-"""
+    <div class="welcome-box">
+        <h3>Nessuna valutazione eseguita</h3>
+        <p>Configura i parametri nella barra laterale e premi "Avvia valutazione" per iniziare.</p>
+    </div>
+    """
 
 def get_metric_card_html(label: str, val: float, color_class: str) -> str:
+    # la classe CSS del colore viene passata da app.py (tipo "green", "red" ecc)
     return f"""
-<div class="metric-card">
-    <div class="label">{label}</div>
-    <div class="value {color_class}">{val:.2f}</div>
-</div>"""
+    <div class="metric-card">
+        <div class="label">{label}</div>
+        <div class="value {color_class}">{val:.2f}</div>
+    </div>"""
 
 def get_breakdown_card_html(src_name: str, score: float, count: int, color_class: str) -> str:
+    # card per il breakdown per sorgente
+    # il prefisso "c-" sulla classe colore è per non confondersi con le classi sopra
     return f"""
-<div class="breakdown-card">
-    <div class="src-name">{src_name}</div>
-    <div class="src-score c-{color_class}">{score:.2f}</div>
-    <div class="src-count">{count} query</div>
-</div>"""
+    <div class="breakdown-card">
+        <div class="src-name">{src_name}</div>
+        <div class="src-score c-{color_class}">{score:.2f}</div>
+        <div class="src-count">{count} query</div>
+    </div>"""
 
 def get_judge_box_html(metric_label: str, v: float, reason: str, color_class: str) -> str:
     return f"""
-<div class="judge-box">
-    <div class="jb-label">{metric_label}</div>
-    <div class="jb-value c-{color_class}">{v}</div>
-    <div class="jb-reason">{reason}</div>
-</div>"""
+    <div class="judge-box">
+        <div class="jb-label">{metric_label}</div>
+        <div class="jb-value c-{color_class}">{v}</div>
+        <div class="jb-reason">{reason}</div>
+    </div>"""
 
 def get_token_bar_html(semantic_sim: float) -> str:
+    # barra per la similarità semantica cross-lingua
     return f"""
-<div class="token-bar">
-    <b>Semantica Cross-lingua:</b> Semantic Similarity: <code>{semantic_sim:.2f}</code>
-</div>"""
+    <div class="token-bar">
+        <b>Semantica Cross-lingua:</b> Semantic Similarity: <code>{semantic_sim:.2f}</code>
+    </div>"""
+
 
 def get_diagnostics_html(avg_r: float, avg_f: float, avg_c: float, avg_f1: float):
     html_issues = '<div class="diag-panel issues" style="height: 100%;"><h3>🔍 Analisi Euristica Avanzata</h3>'
     issues = []
-    
+
     if avg_r >= 0.7 and avg_c < 0.5:
         issues.append("<b>Lost in the Middle / Debolezza LLM:</b> Il retrieval è buono (>=0.7), ma la correttezza è bassa. L'LLM sta fallendo nell'estrarre l'informazione dai documenti forniti.")
     elif avg_r < 0.5 and avg_f >= 0.7:
@@ -54,10 +61,12 @@ def get_diagnostics_html(avg_r: float, avg_f: float, avg_c: float, avg_f1: float
     elif avg_f < 0.5 and avg_c < 0.5:
         issues.append("<b>Allucinazione Grave:</b> Il modello ignora i documenti e inventa risposte sbagliate. Rivedi urgentemente il System Prompt e assicurati che la temperatura sia a 0.")
     elif avg_r < 0.5 and avg_c < 0.5:
+        # questo caso è il peggiore, non funziona proprio nulla
         issues.append("<b>Collasso del Sistema:</b> Né il retrieval né la generazione funzionano bene. Inizia risolvendo la qualità dei chunk dei documenti.")
     elif avg_f1 < 0.4 and avg_c >= 0.6:
         issues.append("<b>Corretto ma Verboso:</b> Le risposte contengono i fatti giusti ma divergono dalla Ground Truth (bassa Similarità Semantica). Chiedi all'LLM di essere più sintetico.")
-        
+
+    # se non abbiamo trovato problemi, diamo un feedback generico
     if not issues and avg_c >= 0.8:
         issues.append("<b>Sistema Ottimizzato:</b> Le metriche indicano un RAG stabile e performante!")
     elif not issues:
@@ -66,7 +75,7 @@ def get_diagnostics_html(avg_r: float, avg_f: float, avg_c: float, avg_f1: float
     for iss in issues:
         html_issues += f'<p>{iss}</p>'
     html_issues += '</div>'
-    
+
     return html_issues
 
 def get_footer_html(num_reports: int, ollama_model: str, time_str: str) -> str:
