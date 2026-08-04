@@ -1,12 +1,11 @@
 import json
-import os
 import random
 import re
 import requests
 import pandas as pd
 import streamlit as st
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from html import unescape
@@ -39,7 +38,8 @@ BENCHMARK_MAPPING = {
     "MultiHop-RAG (Sintesi Multi-Documento)": "Tutto_MULTIHOP.json",
     "CRAG (Parsing HTML & Trabocchetti)": "Tutto_CRAG_DAVE.json",
     "MTRAG (Conversazioni Multi-Turno)": "Tutto_MTRAG_DAVE.json",
-    "OHRBench (Rumore OCR / Scansioni)": "Tutto_OHRBench_DAVE.json"
+    "OHRBench (Rumore OCR / Scansioni)": "Tutto_OHRBench_DAVE.json",
+    "SQuAD-it (Italian Q&A su Wikipedia)": "Tutto_SQUAD.json"
 }
 
 BENCHMARK_SHORT = {
@@ -48,12 +48,15 @@ BENCHMARK_SHORT = {
     "CRAG": "CRAG",
     "MTRAG": "MTRAG",
     "OHRBench": "OHRBench",
+    "SQuAD-it": "SQuAD",
 }
 
 def invoca_ollama(prompt: str, url: str, model: str) -> str:
     """Chiama ollama e ritorna la risposta come stringa."""
     try:
-        r = requests.post(url, json={"model": model, "prompt": prompt, "stream": False, "temperature": 0}, timeout=120)
+        # Uso direttamente il secondo account per le diagnostiche per sicurezza
+        headers = {"Authorization": "Bearer 130e9216867047ceaccab3e8017c5123.joL1WY4giNPRo76atH5cJJOk"}
+        r = requests.post(url, json={"model": model, "prompt": prompt, "stream": False, "temperature": 0}, headers=headers, timeout=120)
     except requests.RequestException as exc:
         st.error(f"Richiesta fallita verso Ollama: {exc}")
         return ""
@@ -86,12 +89,14 @@ if "results" not in st.session_state:
 
 # sidebar
 with st.sidebar:
-    st.markdown("### Connessione")
-    st.markdown('<p class="sidebar-label">Endpoint RAG</p>', unsafe_allow_html=True)
-    rag_endpoint = st.text_input("endpoint_rag", "http://127.0.0.1:8000/ask", label_visibility="collapsed")
+    st.header("⚙️ Impostazioni Motore RAG")
+    motore_rag = st.radio("Seleziona il Motore di Ricerca & LLM", ["Local RAG (BM25)", "DAVE (Elasticsearch)"])
 
-    st.markdown('<p class="sidebar-label">Top-K documenti</p>', unsafe_allow_html=True)
-    top_k = st.slider("top_k", min_value=1, max_value=10, value=3, label_visibility="collapsed")
+    st.markdown('<p class="sidebar-label">Base URL RAG</p>', unsafe_allow_html=True)
+    rag_base_url = st.text_input("rag_base_url", "http://127.0.0.1:8000", label_visibility="collapsed")
+
+    st.markdown('<p class="sidebar-label">Soglia Similarità (Threshold)</p>', unsafe_allow_html=True)
+    threshold = st.slider("threshold", min_value=0.0, max_value=1.0, value=0.3, step=0.05, label_visibility="collapsed")
 
     st.markdown('<hr class="sidebar-divider">', unsafe_allow_html=True)
 
@@ -201,8 +206,11 @@ with tab_valutazione:
 
         # callback per aggiornare la progress bar di streamlit
         def _streamlit_progress(phase, current, total_items, message):
-            if phase == "fetch":
-                barra_progressiva.progress((current / total_items) * 0.5 if total_items else 0)
+            if phase == "ingest":
+                barra_progressiva.progress(0.05 * (current / max(total_items, 1)))
+                status_text.markdown(f"**📥 {message}**")
+            elif phase == "fetch":
+                barra_progressiva.progress(0.05 + (current / total_items) * 0.45 if total_items else 0.05)
                 status_text.markdown(f"**{message}**")
             elif phase == "ragas":
                 status_text.markdown(f"**{message}**")
@@ -213,11 +221,13 @@ with tab_valutazione:
             try:
                 ui_reports = run_evaluation(
                     dataset=insieme_dati,
-                    rag_endpoint=rag_endpoint,
-                    top_k=top_k,
+                    rag_base_url=rag_base_url,
+                    threshold=threshold,
                     ollama_url=ollama_url,
                     ollama_model=ollama_model,
                     progress_callback=_streamlit_progress,
+                    motore_rag=motore_rag,
+                    benchmark_files=files_to_run
                 )
             # se c'è un errore, mostro il messaggio e azzero i risultati
             except RuntimeError as e:
@@ -231,8 +241,8 @@ with tab_valutazione:
         saved = save_evaluation(
             results=ui_reports,
             model=ollama_model,
-            endpoint=rag_endpoint,
-            top_k=top_k,
+            endpoint=rag_base_url,
+            threshold=threshold,
             sample_size=st.session_state.get('sample_size_param', 3),
             benchmarks_used=files_to_run,
         )
@@ -251,14 +261,27 @@ with tab_valutazione:
         avg_c = df['correctness_voto'].mean()
         avg_f = df['faithfulness_voto'].mean()
         avg_r = df['retrieval_voto'].mean()
+        avg_recall = df['recall_voto'].mean() if 'recall_voto' in df.columns else 0.0
         avg_f1 = df['semantic_sim'].mean()
 
         # panoramica metriche
         st.markdown('<div class="section-title">Panoramica (Ragas Metrics)</div>', unsafe_allow_html=True)
-        col1, col2, col3, col4 = st.columns(4)
-        for col, label, val in [(col1, "Answer Correctness", avg_c), (col2, "Faithfulness", avg_f), (col3, "Context Precision", avg_r), (col4, "Semantic Sim", avg_f1)]:
+        col1, col2, col3, col4, col5 = st.columns(5)
+        for col, label, val in [(col1, "Answer Correctness", avg_c), (col2, "Faithfulness", avg_f), (col3, "Context Precision", avg_r), (col4, "Context Recall", avg_recall), (col5, "Semantic Sim", avg_f1)]:
             with col:
                 st.markdown(dash.get_metric_card_html(label, val, _value_color(val)), unsafe_allow_html=True)
+
+        # Avviso su query fallite e contesti troncati
+        ragas_stats = reports[0].get("_ragas_stats", {}) if reports else {}
+        query_fallite = sum(1 for r in reports if r.get("ragas_fallita", False))
+        contesti_troncati = ragas_stats.get("contesti_troncati", 0)
+        if query_fallite > 0 or contesti_troncati > 0:
+            parti_msg = []
+            if contesti_troncati > 0:
+                parti_msg.append(f"**{contesti_troncati}** contesti troncati (superavano il limite del modello)")
+            if query_fallite > 0:
+                parti_msg.append(f"**{query_fallite}/{len(reports)}** query con metriche RAGAS fallite (impostate a 0.0)")
+            st.warning("⚠️ " + " · ".join(parti_msg) + ". Le medie potrebbero non riflettere tutte le query.")
 
         # se ci sono piu benchmark, mostro il breakdown
         sources = df['source'].unique()
@@ -273,13 +296,21 @@ with tab_valutazione:
 
         # tabella risultati
         st.markdown('<div class="section-title">Risultati</div>', unsafe_allow_html=True)
-        display_df = df[['query_id', 'source', 'retrieval_voto', 'faithfulness_voto', 'correctness_voto', 'relevancy_voto']].copy()
-        display_df.columns = ['Query', 'Benchmark', 'C. Precision', 'Faithfulness', 'Correctness', 'Relevancy']
-        st.dataframe(
-            display_df.style.format({'C. Precision': '{:.2f}', 'Faithfulness': '{:.2f}', 'Correctness': '{:.2f}', 'Relevancy': '{:.2f}'})
-            .background_gradient(subset=['C. Precision', 'Faithfulness', 'Correctness', 'Relevancy'], cmap='RdYlGn', vmin=0, vmax=1),
-            width='stretch', hide_index=True,
-        )
+        display_df = df[['query_id', 'source', 'retrieval_voto', 'recall_voto', 'faithfulness_voto', 'correctness_voto', 'relevancy_voto']].copy() if 'recall_voto' in df.columns else df[['query_id', 'source', 'retrieval_voto', 'faithfulness_voto', 'correctness_voto', 'relevancy_voto']].copy()
+        if 'recall_voto' in df.columns:
+            display_df.columns = ['Query', 'Benchmark', 'C. Precision', 'C. Recall', 'Faithfulness', 'Correctness', 'Relevancy']
+            st.dataframe(
+                display_df.style.format({'C. Precision': '{:.2f}', 'C. Recall': '{:.2f}', 'Faithfulness': '{:.2f}', 'Correctness': '{:.2f}', 'Relevancy': '{:.2f}'})
+                .background_gradient(subset=['C. Precision', 'C. Recall', 'Faithfulness', 'Correctness', 'Relevancy'], cmap='RdYlGn', vmin=0, vmax=1),
+                width='stretch', hide_index=True,
+            )
+        else:
+            display_df.columns = ['Query', 'Benchmark', 'C. Precision', 'Faithfulness', 'Correctness', 'Relevancy']
+            st.dataframe(
+                display_df.style.format({'C. Precision': '{:.2f}', 'Faithfulness': '{:.2f}', 'Correctness': '{:.2f}', 'Relevancy': '{:.2f}'})
+                .background_gradient(subset=['C. Precision', 'Faithfulness', 'Correctness', 'Relevancy'], cmap='RdYlGn', vmin=0, vmax=1),
+                width='stretch', hide_index=True,
+            )
 
         # dettaglio singole query con expander
         st.markdown('<div class="section-title">Dettaglio Query</div>', unsafe_allow_html=True)
@@ -300,9 +331,10 @@ with tab_valutazione:
 
                 st.markdown("---")
                 st.markdown("**Metriche Ragas (LLM)**")
-                m1, m2, m3, m4 = st.columns(4)
-                for col, metric_key, metric_label in [(m1, 'retrieval', 'Context Precis.'), (m2, 'faithfulness', 'Faithfulness'), (m3, 'correctness', 'Correctness'), (m4, 'relevancy', 'Relevancy')]:
-                    v = rep.get(f'{metric_key}_voto', 0)
+                m1, m2, m3, m4, m5 = st.columns(5)
+                for col, metric_key, metric_label in [(m1, 'retrieval', 'Context Precis.'), (m2, 'recall', 'Context Recall'), (m3, 'faithfulness', 'Faithfulness'), (m4, 'correctness', 'Correctness'), (m5, 'relevancy', 'Relevancy')]:
+                    raw_v = rep.get(f'{metric_key}_voto', 0)
+                    v = round(float(raw_v), 3) if pd.notna(raw_v) else 0.0
                     reason = ""  # ragas restituisce solo punteggi, non i motivi purtroppo
                     with col:
                         st.markdown(dash.get_judge_box_html(metric_label, v, reason, _value_color(v)), unsafe_allow_html=True)
@@ -425,14 +457,50 @@ with tab_explore:
         st.markdown('<div class="section-title">Confronto Valutazioni</div>', unsafe_allow_html=True)
 
         if len(sel_to_confront) == 0:
-            st.info("Seleziona almeno 2 valutazioni con le checkbox per confrontarle.")
-        elif len(sel_to_confront) == 1:
-            st.warning("Seleziona almeno un'altra valutazione per abilitare il confronto.")
+            st.info("Seleziona una o più valutazioni per confrontarle.")
         else:
-            # grafico radar o barre
+            metric_keys = ["answer_correctness", "faithfulness", "context_precision", "context_recall", "semantic_sim"]
+            metric_labels = ["Answer Correctness", "Faithfulness", "Context Precision", "Context Recall", "Semantic Sim"]
+
+            # Tabella riassuntiva dei risultati
+            st.markdown('<div class="section-title">Tabella Risultati Metriche</div>', unsafe_allow_html=True)
+            table_agg_rows = []
+            for ev in sel_to_confront:
+                agg = ev.get("aggregate", {})
+                row = {"Valutazione": ev["name"]}
+                for k, label in zip(metric_keys, metric_labels):
+                    row[label] = round(agg.get(k, 0.0), 2)
+                table_agg_rows.append(row)
+            
+            st.dataframe(pd.DataFrame(table_agg_rows), use_container_width=True)
+
+            # Tabella di dettaglio delle singole query a confronto
+            st.markdown('<div class="section-title">Dettaglio Singole Query a Confronto</div>', unsafe_allow_html=True)
+            query_map = {}
+            for ev in sel_to_confront:
+                full_eval = load_evaluation(ev["filepath"])
+                eval_name = ev["name"]
+                for res in full_eval.get("results", []):
+                    qid = res.get("query_id", "")
+                    if qid not in query_map:
+                        query_map[qid] = {
+                            ("Info", "Query ID"): qid,
+                            ("Info", "Benchmark"): res.get("source", ""),
+                            ("Info", "Domanda"): res.get("domanda", ""),
+                        }
+                    query_map[qid][("Answer Correctness", eval_name)] = round(res.get("correctness_voto", 0.0), 2)
+                    query_map[qid][("Faithfulness", eval_name)] = round(res.get("faithfulness_voto", 0.0), 2)
+                    query_map[qid][("Context Precision", eval_name)] = round(res.get("retrieval_voto", 0.0), 2)
+                    query_map[qid][("Context Recall", eval_name)] = round(res.get("recall_voto", 0.0), 2)
+                    query_map[qid][("Semantic Sim", eval_name)] = round(res.get("semantic_sim", 0.0), 2)
+            
+            if query_map:
+                df_compare = pd.DataFrame(list(query_map.values()))
+                df_compare.columns = pd.MultiIndex.from_tuples(df_compare.columns)
+                st.dataframe(df_compare, use_container_width=True)
+
+            # grafico radar o barre 
             st.markdown('<div class="compare-chart">', unsafe_allow_html=True)
-            metric_keys = ["answer_correctness", "faithfulness", "context_precision", "semantic_sim"]
-            metric_labels = ["Answer Correctness", "Faithfulness", "Context Precision", "Semantic Sim"]
 
             chart_type = st.radio(
                 "Tipo di grafico",

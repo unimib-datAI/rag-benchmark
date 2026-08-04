@@ -25,6 +25,7 @@ BENCHMARK_MAP = {
     "CRAG": "Tutto_CRAG_DAVE.json",
     "MTRAG": "Tutto_MTRAG_DAVE.json",
     "OHRBENCH": "Tutto_OHRBench_DAVE.json",
+    "SQUAD": "Tutto_SQUAD.json",
 }
 ALL_BENCHMARKS = list(BENCHMARK_MAP.keys())
 
@@ -60,9 +61,9 @@ def richiedi_input(messaggio, default):
 def menu_interattivo():
     config = carica_config()
 
-    # prendo i default dalla config salvata (se c'è)
-    def_endpoint = config.get("endpoint", "http://127.0.0.1:8000/ask")
-    def_top_k = config.get("top_k", "3")
+    def_endpoint = config.get("endpoint", "http://127.0.0.1:8000")
+    def_threshold = config.get("threshold", "0.0")
+    def_motore = config.get("motore_rag", "Local RAG (BM25)")
     def_ollama_url = config.get("ollama_url", "http://localhost:11434")
     def_model = config.get("model", "gemma4:31b-cloud")
     def_benchmarks = config.get("benchmarks", "TUTTI")
@@ -71,16 +72,16 @@ def menu_interattivo():
 
     while True:
         print("\n--- Configurazione Valutazione ---")
-        endpoint = richiedi_input("Inserire endpoint RAG", def_endpoint)
+        endpoint = richiedi_input("Inserire Base URL RAG", def_endpoint)
+        motore_rag = richiedi_input("Selezionare Motore RAG (DAVE o Local RAG)", def_motore)
 
-        # top_k deve essere un intero
         while True:
-            top_k_str = richiedi_input("Inserire il numero dei top-k documenti", def_top_k)
+            thresh_str = richiedi_input("Inserire Soglia Similarità (Threshold 0.0 - 1.0)", def_threshold)
             try:
-                top_k = int(top_k_str)
+                threshold = float(thresh_str)
                 break
             except ValueError:
-                print("Per favore, inserisci un numero valido.")
+                print("Per favore, inserisci un numero decimale valido.")
 
         ollama_url = richiedi_input("Inserire URL di Ollama", def_ollama_url)
         model = richiedi_input("Inserire modello di LLM as a Judge", def_model)
@@ -94,7 +95,6 @@ def menu_interattivo():
         if benchmarks_str.upper() == "TUTTI":
             benchmarks = ALL_BENCHMARKS
         else:
-            # parso la stringa e tengo solo quelli validi
             benchmarks = [b.strip().upper() for b in benchmarks_str.split(",")
                           if b.strip().upper() in ALL_BENCHMARKS]
             if not benchmarks:
@@ -102,7 +102,6 @@ def menu_interattivo():
                 benchmarks = ALL_BENCHMARKS
                 benchmarks_str = "TUTTI"
 
-        # anche sample_size deve essere intero
         while True:
             sample_size_str = richiedi_input("Inserire il numero di query per benchmark", def_sample_size)
             try:
@@ -111,7 +110,6 @@ def menu_interattivo():
             except ValueError:
                 print("Per favore, inserisci un numero valido.")
 
-        # modalita' selezione query
         while True:
             mode_str = richiedi_input("Selezionare modalità query: [C]asuali o [F]isse", def_selection_mode).strip().upper()
             if mode_str in ["C", "F"]:
@@ -119,10 +117,10 @@ def menu_interattivo():
                 break
             print("Per favore, inserisci 'C' per Casuali o 'F' per Fisse.")
 
-        # riepilogo
         print("\n--- Riepilogo Configurazione ---")
-        print(f"Endpoint RAG:    {endpoint}")
-        print(f"Top-K:           {top_k}")
+        print(f"Base URL RAG:    {endpoint}")
+        print(f"Motore RAG:      {motore_rag}")
+        print(f"Threshold:       {threshold}")
         print(f"Ollama URL:      {ollama_url}")
         print(f"Modello LLM:     {model}")
         print(f"Benchmark:       {', '.join(benchmarks)}")
@@ -132,9 +130,9 @@ def menu_interattivo():
         scelta = input("\nVuoi [I]niziare la valutazione o [M]odificare qualche parametro? [I/M]: ").strip().upper()
 
         if scelta == "I" or scelta == "":
-            # salvo per la prossima volta cosi non devo reinserire tutto
             config["endpoint"] = endpoint
-            config["top_k"] = str(top_k)
+            config["motore_rag"] = motore_rag
+            config["threshold"] = str(threshold)
             config["ollama_url"] = ollama_url
             config["model"] = model
             config["benchmarks"] = benchmarks_str
@@ -142,7 +140,7 @@ def menu_interattivo():
             config["selection_mode"] = mode_str
             salva_config(config)
 
-            return endpoint, top_k, ollama_url, model, benchmarks, sample_size, selection_mode
+            return endpoint, threshold, motore_rag, ollama_url, model, benchmarks, sample_size, selection_mode
 
 
 # caricamento dati e valutazione
@@ -244,7 +242,7 @@ def main():
     print(HEADER)
 
     # 1) configurazione interattiva
-    endpoint, top_k, ollama_url, model, benchmarks, sample_size, selection_mode = menu_interattivo()
+    endpoint, threshold, motore_rag, ollama_url, model, benchmarks, sample_size, selection_mode = menu_interattivo()
 
     # 2) carico il dataset
     print("\n📂 Caricamento dataset...")
@@ -260,12 +258,13 @@ def main():
     print("🚀 Avvio valutazione...\n")
     try:
         results = run_evaluation(
-            dataset=dataset,
-            rag_endpoint=endpoint,
-            top_k=top_k,
-            ollama_url=ollama_url,
-            ollama_model=model,
+            dataset,
+            endpoint,
+            threshold,
+            ollama_url,
+            model,
             progress_callback=_cli_progress,
+            motore_rag=motore_rag
         )
     except ConnectionError as e:
         print(f"\n❌ Errore di connessione: {e}")
@@ -287,7 +286,7 @@ def main():
             results=results,
             model=model,
             endpoint=endpoint,
-            top_k=top_k,
+            threshold=threshold,
             sample_size=sample_size,
             benchmarks_used=benchmarks,
         )

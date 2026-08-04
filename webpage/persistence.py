@@ -8,7 +8,7 @@ EVAL_DIR = Path(__file__).resolve().parents[1] / "valutazioni"
 EVAL_DIR.mkdir(exist_ok=True)
 
 
-def save_evaluation(results: list[dict], model: str, endpoint: str, top_k: int,
+def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: float,
                     sample_size: int, benchmarks_used: list[str]) -> dict:
     """Salva i risultati di una valutazione su file JSON."""
     eval_id = str(uuid.uuid4())[:8]
@@ -25,6 +25,7 @@ def save_evaluation(results: list[dict], model: str, endpoint: str, top_k: int,
         "faithfulness": float(df['faithfulness_voto'].mean()) if 'faithfulness_voto' in df else 0.0,
         "context_precision": float(df['retrieval_voto'].mean()) if 'retrieval_voto' in df else 0.0,
         "answer_relevancy": float(df['relevancy_voto'].mean()) if 'relevancy_voto' in df else 0.0,
+        "context_recall": float(df['recall_voto'].mean()) if 'recall_voto' in df else 0.0,
         "semantic_sim": float(df['semantic_sim'].mean()) if 'semantic_sim' in df else 0.0,
     }
 
@@ -37,8 +38,9 @@ def save_evaluation(results: list[dict], model: str, endpoint: str, top_k: int,
                 "answer_correctness": float(src_df['correctness_voto'].mean()),
                 "faithfulness": float(src_df['faithfulness_voto'].mean()),
                 "context_precision": float(src_df['retrieval_voto'].mean()),
-                "answer_relevancy": float(src_df['relevancy_voto'].mean()),
-                "semantic_sim": float(src_df['semantic_sim'].mean()),
+                "answer_relevancy": float(src_df['relevancy_voto'].mean()) if 'relevancy_voto' in src_df else 0.0,
+                "context_recall": float(src_df['recall_voto'].mean()) if 'recall_voto' in src_df else 0.0,
+                "semantic_sim": float(src_df['semantic_sim'].mean()) if 'semantic_sim' in src_df else 0.0,
                 "count": len(src_df),
             }
 
@@ -48,7 +50,7 @@ def save_evaluation(results: list[dict], model: str, endpoint: str, top_k: int,
         "timestamp": timestamp.isoformat(),
         "model": model,
         "endpoint": endpoint,
-        "top_k": top_k,
+        "threshold": threshold,
         "sample_size": sample_size,
         "benchmarks_used": benchmarks_used,
         "aggregate": aggregate,
@@ -74,7 +76,7 @@ def list_evaluations() -> list[dict]:
                 "timestamp": data["timestamp"],
                 "model": data["model"],
                 "endpoint": data.get("endpoint", ""),
-                "top_k": data.get("top_k", 3),
+                "threshold": data.get("threshold", 0.0),
                 "sample_size": data.get("sample_size", 0),
                 "benchmarks_used": data.get("benchmarks_used", []),
                 "aggregate": data.get("aggregate", {}),
