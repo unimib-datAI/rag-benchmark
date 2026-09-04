@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# DAVE and SuperBenchmark Caches/Config
+.dave_collections.json
+.dave_docs_cache.json
+config.json
