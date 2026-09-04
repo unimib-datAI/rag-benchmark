@@ -3,33 +3,32 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-# cartella dove salvo i json delle valutazioni
+# folder where evaluation JSON files are saved
 EVAL_DIR = Path(__file__).resolve().parents[1] / "valutazioni"
 EVAL_DIR.mkdir(exist_ok=True)
 
 
 def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: float,
-                    sample_size: int, benchmarks_used: list[str]) -> dict:
-    """Salva i risultati di una valutazione su file JSON."""
+                    sample_size: int, benchmarks_used: list[str], rag_engine: str) -> dict:
+    """Saves the evaluation results to a JSON file."""
     eval_id = str(uuid.uuid4())[:8]
     timestamp = datetime.now()
     name = f"eval_{timestamp.strftime('%Y-%m-%d_%H-%M')}_{model.split(':')[0]}"
 
-    # calcolo medie aggregate con pandas
+    # calculate aggregate averages with pandas
     import pandas as pd
     df = pd.DataFrame(results)
 
-    # se manca una colonna metto 0.0 come default
+    # if a column is missing, set 0.0 as default
     aggregate = {
         "answer_correctness": float(df['correctness_voto'].mean()) if 'correctness_voto' in df else 0.0,
         "faithfulness": float(df['faithfulness_voto'].mean()) if 'faithfulness_voto' in df else 0.0,
         "context_precision": float(df['retrieval_voto'].mean()) if 'retrieval_voto' in df else 0.0,
         "answer_relevancy": float(df['relevancy_voto'].mean()) if 'relevancy_voto' in df else 0.0,
         "context_recall": float(df['recall_voto'].mean()) if 'recall_voto' in df else 0.0,
-        "semantic_sim": float(df['semantic_sim'].mean()) if 'semantic_sim' in df else 0.0,
     }
 
-    # breakdown per singolo benchmark
+    # breakdown per benchmark
     per_benchmark = {}
     if 'source' in df.columns:
         for src in df['source'].unique():
@@ -40,7 +39,6 @@ def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: f
                 "context_precision": float(src_df['retrieval_voto'].mean()),
                 "answer_relevancy": float(src_df['relevancy_voto'].mean()) if 'relevancy_voto' in src_df else 0.0,
                 "context_recall": float(src_df['recall_voto'].mean()) if 'recall_voto' in src_df else 0.0,
-                "semantic_sim": float(src_df['semantic_sim'].mean()) if 'semantic_sim' in src_df else 0.0,
                 "count": len(src_df),
             }
 
@@ -53,6 +51,7 @@ def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: f
         "threshold": threshold,
         "sample_size": sample_size,
         "benchmarks_used": benchmarks_used,
+        "rag_engine": rag_engine,
         "aggregate": aggregate,
         "per_benchmark": per_benchmark,
         "results": results,
@@ -64,12 +63,12 @@ def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: f
 
 
 def list_evaluations() -> list[dict]:
-    """Ritorna la lista delle valutazioni salvate (senza i risultati completi, troppo pesanti)."""
+    """Returns the list of saved evaluations (without full results, which are too heavy)."""
     evals = []
     for f in sorted(EVAL_DIR.glob("eval_*.json"), reverse=True):
         try:
             data = json.loads(f.read_text(encoding='utf-8'))
-            # prendo solo i metadati, i results li carico solo quando servono
+            # take only metadata; load results only when needed
             evals.append({
                 "id": data["id"],
                 "name": data["name"],
@@ -79,24 +78,25 @@ def list_evaluations() -> list[dict]:
                 "threshold": data.get("threshold", 0.0),
                 "sample_size": data.get("sample_size", 0),
                 "benchmarks_used": data.get("benchmarks_used", []),
+                "rag_engine": data.get("rag_engine", "Unknown"),
                 "aggregate": data.get("aggregate", {}),
                 "per_benchmark": data.get("per_benchmark", {}),
                 "num_queries": len(data.get("results", [])),
                 "filepath": str(f),
             })
         except (json.JSONDecodeError, KeyError):
-            # file corrotto o incompleto, lo skippo
+            # corrupted or incomplete file, skip it
             continue
     return evals
 
 
 def load_evaluation(filepath: str) -> dict:
-    # carica una valutazione completa dal json
+    # loads a complete evaluation from JSON
     return json.loads(Path(filepath).read_text(encoding='utf-8'))
 
 
 def delete_evaluation(filepath: str) -> bool:
-    # cancella il file, ritorna True se ok
+    # deletes the file, returns True if successful
     try:
         Path(filepath).unlink()
         return True

@@ -3,24 +3,59 @@ import os
 import time
 import glob
 from pathlib import Path
+from tqdm import tqdm
 from dave_client import DaveClient
 
 BASE_DIR = Path(__file__).resolve().parent
 
 def upload_docs_in_batches(client: DaveClient, collection_id: str, docs: list, benchmark_name: str):
-    BATCH_SIZE = 100
-    for i in range(0, len(docs), BATCH_SIZE):
-        batch = docs[i:i+BATCH_SIZE]
-        job = client.create_txt_upload_job(collection_id, batch)
-        job_id = job["jobId"]
-        print(f"[{benchmark_name}] Batch {i//BATCH_SIZE + 1} sottomesso. Job ID: {job_id}")
+    DOC_CACHE_DB = BASE_DIR / ".dave_docs_cache.json"
+    doc_cache = {}
+    if DOC_CACHE_DB.exists():
+        with open(DOC_CACHE_DB, "r") as f:
+            doc_cache = json.load(f)
+            
+    if benchmark_name not in doc_cache:
+        doc_cache[benchmark_name] = []
         
-        # Aspetta che finisca (per non sovraccaricare il server)
+    already_uploaded = set(doc_cache[benchmark_name])
+    new_docs = [d for d in docs if d["fileName"] not in already_uploaded]
+    
+    if not new_docs:
+        print(f"[{benchmark_name}] Tutti i documenti ({len(docs)}) sono già presenti in cache. Salto l'upload.")
+        return
+        
+    print(f"[{benchmark_name}] {len(docs) - len(new_docs)} doc già caricati. Inizio upload dei {len(new_docs)} nuovi doc...")
+
+    BATCH_SIZE = 50
+    batches = list(range(0, len(new_docs), BATCH_SIZE))
+    for i in tqdm(batches, desc=f"[{benchmark_name}] Uploading", unit="batch"):
+        batch = new_docs[i:i+BATCH_SIZE]
+        try:
+            job = client.create_txt_upload_job(collection_id, batch)
+            job_id = job["jobId"]
+            doc_cache[benchmark_name].extend([d["fileName"] for d in batch])
+            with open(DOC_CACHE_DB, "w") as f:
+                json.dump(doc_cache, f)
+            time.sleep(2)
+        except Exception as e:
+            tqdm.write(f"[{benchmark_name}] Errore sottomissione Batch {i//BATCH_SIZE + 1}: {e}. Procedo col prossimo.")
+            time.sleep(2)
+            continue
+        
+        # Aspetta che finisca (timeout di sicurezza per evitare blocchi infiniti del server)
+        max_wait = 120
+        start_time = time.time()
         while True:
-            status = client.get_upload_job_status(job_id)
-            if status["status"] in ("completed", "completed_with_errors", "failed", "cancelled"):
-                print(f"[{benchmark_name}] Job {job_id} terminato con stato: {status['status']}")
-                break
+            try:
+                status = client.get_upload_job_status(job_id)
+                if status["status"] in ("completed", "completed_with_errors", "failed", "cancelled"):
+                    break
+                if time.time() - start_time > max_wait:
+                    tqdm.write(f"[{benchmark_name}] Timeout di {max_wait}s superato per Job {job_id} (Server bloccato). Salto al prossimo.")
+                    break
+            except Exception as e:
+                tqdm.write(f"[{benchmark_name}] Errore recupero stato Job {job_id}: {e}. Riprovo...")
             time.sleep(2)
 
 def ingest_file(client: DaveClient, filepath: str, benchmark_name: str):
@@ -40,8 +75,6 @@ def ingest_file(client: DaveClient, filepath: str, benchmark_name: str):
         with open(COLLECTION_DB, "w") as f:
             json.dump(mapping, f)
         print(f"Creata nuova collection per {benchmark_name} (ID: {collection_id})")
-    else:
-        print(f"Collection {benchmark_name} gia esistente in cache locale (ID: {collection_id})")
 
     # Leggec i documenti
     docs = []
@@ -187,13 +220,13 @@ def main():
         print(f"File non trovato: {crag_path}")
 
     # MTRAG ha tanti file .jsonl nella cartella corpora/document_level
-    mtrag_dir = BASE_DIR / "Benchmarks" / "mt-rag-benchmark" / "corpora" / "document_level"
-    if mtrag_dir.exists():
-        for jsonl_file in glob.glob(str(mtrag_dir / "**" / "*.jsonl"), recursive=True):
-            if os.path.isfile(jsonl_file):
-                ingest_file(client, jsonl_file, "MTRAG")
-    else:
-        print(f"Cartella non trovata: {mtrag_dir}")
+    #mtrag_dir = BASE_DIR / "Benchmarks" / "mt-rag-benchmark" / "corpora" / "document_level"
+    #if mtrag_dir.exists():
+    #    for jsonl_file in glob.glob(str(mtrag_dir / "**" / "*.jsonl"), recursive=True):
+     #       if os.path.isfile(jsonl_file):
+      #          ingest_file(client, jsonl_file, "MTRAG")
+   # else:
+     #   print(f"Cartella non trovata: {mtrag_dir}")
 
     # Ingest SQuAD-it
     squad_path = BASE_DIR / "Run" / "squad_corpus.json"

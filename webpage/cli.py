@@ -4,21 +4,21 @@ import random
 from collections import defaultdict
 from pathlib import Path
 
-# serve per importare evaluator e persistence dalla stessa cartella
+# used to import evaluator and persistence from the same folder
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 try:
     from evaluator import run_evaluation
     from persistence import save_evaluation, EVAL_DIR
 except ImportError as e:
-    print(f"Errore di importazione: {e}")
+    print(f"Import error: {e}")
     sys.exit(1)
 
-# path e config
+# paths and config
 RUN_DIR = Path(__file__).resolve().parents[1] / "Run"
 CONFIG_FILE = Path(__file__).resolve().parents[1] / "config.json"
 
-# mappa benchmark -> file json corrispondente
+# map benchmark -> corresponding json file
 BENCHMARK_MAP = {
     "LEGALBENCH": "Tutto_LEGALBENCH.json",
     "MULTIHOP": "Tutto_MULTIHOP.json",
@@ -31,13 +31,13 @@ ALL_BENCHMARKS = list(BENCHMARK_MAP.keys())
 
 HEADER = r"""
 ╔══════════════════════════════════════════════════════════╗
-║         SuperBenchmark  —  CLI Valutazione RAG           ║
+║         SuperBenchmark  —  CLI RAG Evaluation            ║
 ╚══════════════════════════════════════════════════════════╝
 """
 
 
-# gestione config (salva/carica da json)
-def carica_config():
+# config management (save/load from json)
+def load_config():
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -46,114 +46,114 @@ def carica_config():
             return {}
     return {}
 
-def salva_config(config):
+def save_config(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=4)
 
 
-# input e menu interattivo
+# input and interactive menu
 
-def richiedi_input(messaggio, default):
-    valore = input(f"{messaggio} [{default}]: ").strip()
-    return valore if valore else default
+def prompt_input(message, default):
+    value = input(f"{message} [{default}]: ").strip()
+    return value if value else default
 
 
-def menu_interattivo():
-    config = carica_config()
+def interactive_menu():
+    config = load_config()
 
     def_endpoint = config.get("endpoint", "http://127.0.0.1:8000")
     def_threshold = config.get("threshold", "0.0")
-    def_motore = config.get("motore_rag", "Local RAG (BM25)")
+    def_rag_engine = config.get("motore_rag", "Local RAG (BM25)")
     def_ollama_url = config.get("ollama_url", "http://localhost:11434")
     def_model = config.get("model", "gemma4:31b-cloud")
-    def_benchmarks = config.get("benchmarks", "TUTTI")
+    def_benchmarks = config.get("benchmarks", "ALL")
     def_sample_size = config.get("sample_size", "3")
-    def_selection_mode = config.get("selection_mode", "C")
+    def_selection_mode = config.get("selection_mode", "R")
 
     while True:
-        print("\n--- Configurazione Valutazione ---")
-        endpoint = richiedi_input("Inserire Base URL RAG", def_endpoint)
-        motore_rag = richiedi_input("Selezionare Motore RAG (DAVE o Local RAG)", def_motore)
+        print("\n--- Evaluation Configuration ---")
+        endpoint = prompt_input("Enter RAG Base URL", def_endpoint)
+        rag_engine = prompt_input("Select RAG Engine (DAVE or Local RAG)", def_rag_engine)
 
         while True:
-            thresh_str = richiedi_input("Inserire Soglia Similarità (Threshold 0.0 - 1.0)", def_threshold)
+            thresh_str = prompt_input("Enter Similarity Threshold (0.0 - 1.0)", def_threshold)
             try:
                 threshold = float(thresh_str)
                 break
             except ValueError:
-                print("Per favore, inserisci un numero decimale valido.")
+                print("Please enter a valid decimal number.")
 
-        ollama_url = richiedi_input("Inserire URL di Ollama", def_ollama_url)
-        model = richiedi_input("Inserire modello di LLM as a Judge", def_model)
+        ollama_url = prompt_input("Enter Ollama URL", def_ollama_url)
+        model = prompt_input("Enter LLM Judge model", def_model)
 
-        print(f"\nBenchmark disponibili: {', '.join(ALL_BENCHMARKS)}")
-        benchmarks_str = richiedi_input(
-            "Selezionare i benchmark per la valutazione (separati da virgola, o TUTTI)",
+        print(f"\nAvailable benchmarks: {', '.join(ALL_BENCHMARKS)}")
+        benchmarks_str = prompt_input(
+            "Select benchmarks for evaluation (comma-separated, or ALL)",
             def_benchmarks
         )
 
-        if benchmarks_str.upper() == "TUTTI":
+        if benchmarks_str.upper() == "ALL":
             benchmarks = ALL_BENCHMARKS
         else:
             benchmarks = [b.strip().upper() for b in benchmarks_str.split(",")
                           if b.strip().upper() in ALL_BENCHMARKS]
             if not benchmarks:
-                print("Nessun benchmark valido inserito. Verranno usati tutti.")
+                print("No valid benchmarks entered. All will be used.")
                 benchmarks = ALL_BENCHMARKS
-                benchmarks_str = "TUTTI"
+                benchmarks_str = "ALL"
 
         while True:
-            sample_size_str = richiedi_input("Inserire il numero di query per benchmark", def_sample_size)
+            sample_size_str = prompt_input("Enter number of queries per benchmark", def_sample_size)
             try:
                 sample_size = int(sample_size_str)
                 break
             except ValueError:
-                print("Per favore, inserisci un numero valido.")
+                print("Please enter a valid number.")
 
         while True:
-            mode_str = richiedi_input("Selezionare modalità query: [C]asuali o [F]isse", def_selection_mode).strip().upper()
-            if mode_str in ["C", "F"]:
-                selection_mode = "Casuali" if mode_str == "C" else "Fisse"
+            mode_str = prompt_input("Select query mode: [R]andom or [F]ixed", def_selection_mode).strip().upper()
+            if mode_str in ["R", "F"]:
+                selection_mode = "Random" if mode_str == "R" else "Fixed"
                 break
-            print("Per favore, inserisci 'C' per Casuali o 'F' per Fisse.")
+            print("Please enter 'R' for Random or 'F' for Fixed.")
 
-        print("\n--- Riepilogo Configurazione ---")
-        print(f"Base URL RAG:    {endpoint}")
-        print(f"Motore RAG:      {motore_rag}")
+        print("\n--- Configuration Summary ---")
+        print(f"RAG Base URL:    {endpoint}")
+        print(f"RAG Engine:      {rag_engine}")
         print(f"Threshold:       {threshold}")
         print(f"Ollama URL:      {ollama_url}")
-        print(f"Modello LLM:     {model}")
-        print(f"Benchmark:       {', '.join(benchmarks)}")
-        print(f"Query x Bench:   {sample_size}")
-        print(f"Modalità query:  {selection_mode}")
+        print(f"LLM Model:       {model}")
+        print(f"Benchmarks:      {', '.join(benchmarks)}")
+        print(f"Queries/Bench:   {sample_size}")
+        print(f"Query mode:      {selection_mode}")
 
-        scelta = input("\nVuoi [I]niziare la valutazione o [M]odificare qualche parametro? [I/M]: ").strip().upper()
+        choice = input("\nDo you want to [S]tart the evaluation or [M]odify parameters? [S/M]: ").strip().upper()
 
-        if scelta == "I" or scelta == "":
+        if choice == "S" or choice == "":
             config["endpoint"] = endpoint
-            config["motore_rag"] = motore_rag
+            config["motore_rag"] = rag_engine
             config["threshold"] = str(threshold)
             config["ollama_url"] = ollama_url
             config["model"] = model
             config["benchmarks"] = benchmarks_str
             config["sample_size"] = str(sample_size)
             config["selection_mode"] = mode_str
-            salva_config(config)
+            save_config(config)
 
-            return endpoint, threshold, motore_rag, ollama_url, model, benchmarks, sample_size, selection_mode
+            return endpoint, threshold, rag_engine, ollama_url, model, benchmarks, sample_size, selection_mode
 
 
-# caricamento dati e valutazione
+# data loading and evaluation
 
-def _carica_dataset(benchmarks, sample_size, selection_mode):
-    """Carica le query dai file json dei benchmark selezionati."""
+def _load_dataset(benchmarks, sample_size, selection_mode):
+    """Load queries from the json files of the selected benchmarks."""
     dataset = []
 
     for name in benchmarks:
         filename = BENCHMARK_MAP[name]
         path = RUN_DIR / filename
         if not path.exists():
-            print(f"  ⚠  File non trovato: {path}  — benchmark {name} ignorato.")
+            print(f"  ⚠  File not found: {path}  — benchmark {name} skipped.")
             continue
 
         with open(path, 'r', encoding='utf-8-sig') as f:
@@ -165,7 +165,7 @@ def _carica_dataset(benchmarks, sample_size, selection_mode):
                 conversations[conv_id].append(item)
 
             conv_keys = list(conversations.keys())
-            if selection_mode == "Casuali":
+            if selection_mode == "Random":
                 random.shuffle(conv_keys)
             else:
                 conv_keys.sort()
@@ -180,7 +180,7 @@ def _carica_dataset(benchmarks, sample_size, selection_mode):
                         turns_added += 1
         else:
             sz = min(sample_size, len(items))
-            if selection_mode == "Casuali":
+            if selection_mode == "Random":
                 dataset.extend(random.sample(items, sz))
             else:
                 dataset.extend(items[:sz])
@@ -189,7 +189,7 @@ def _carica_dataset(benchmarks, sample_size, selection_mode):
 
 
 def _cli_progress(phase, current, total, message):
-    # callback per mostrare il progresso a terminale
+    # callback to show progress in terminal
     if phase == "fetch":
         print(f"  [{current}/{total}] {message}", end="\r", flush=True)
     elif phase == "ragas":
@@ -198,27 +198,25 @@ def _cli_progress(phase, current, total, message):
         print(f"\n  {message}")
 
 
-def _stampa_risultati(results):
+def _print_results(results):
     n = len(results)
     if n == 0:
-        print("\n  Nessun risultato da mostrare.")
+        print("\n  No results to show.")
         return
 
-    # calcolo medie
+    # calculate averages
     avg_corr = sum(r.get("correctness_voto", 0) for r in results) / n
     avg_faith = sum(r.get("faithfulness_voto", 0) for r in results) / n
     avg_ctx = sum(r.get("retrieval_voto", 0) for r in results) / n
     avg_rel = sum(r.get("relevancy_voto", 0) for r in results) / n
-    avg_sem = sum(r.get("semantic_sim", 0) for r in results) / n
 
-    print("\n📊 Metriche Aggregate:")
+    print("\n📊 Aggregate Metrics:")
     print(f"  Answer Correctness:  {avg_corr:.4f}")
     print(f"  Faithfulness:        {avg_faith:.4f}")
     print(f"  Context Precision:   {avg_ctx:.4f}")
     print(f"  Answer Relevancy:    {avg_rel:.4f}")
-    print(f"  Semantic Similarity: {avg_sem:.4f}")
 
-    # tabella per-query
+    # per-query table
     print("\n📋 Per Query:")
     col_num = 12
     fmt = f"  {{:<15}}  {{:<12}}  {{:>{col_num}}}  {{:>{col_num}}}  {{:>{col_num}}}  {{:>{col_num}}}"
@@ -241,21 +239,21 @@ def _stampa_risultati(results):
 def main():
     print(HEADER)
 
-    # 1) configurazione interattiva
-    endpoint, threshold, motore_rag, ollama_url, model, benchmarks, sample_size, selection_mode = menu_interattivo()
+    # 1) interactive configuration
+    endpoint, threshold, rag_engine, ollama_url, model, benchmarks, sample_size, selection_mode = interactive_menu()
 
-    # 2) carico il dataset
-    print("\n📂 Caricamento dataset...")
-    dataset = _carica_dataset(benchmarks, sample_size, selection_mode)
+    # 2) load the dataset
+    print("\n📂 Loading dataset...")
+    dataset = _load_dataset(benchmarks, sample_size, selection_mode)
 
     if not dataset:
-        print("\n❌ Errore: nessun dato caricato. Controlla che i file benchmark esistano nella cartella Run/.")
+        print("\n❌ Error: no data loaded. Check that benchmark files exist in the Run/ folder.")
         sys.exit(1)
 
-    print(f"  ✔ {len(dataset)} query caricate.\n")
+    print(f"  ✔ {len(dataset)} queries loaded.\n")
 
-    # 3) lancio la valutazione
-    print("🚀 Avvio valutazione...\n")
+    # 3) start the evaluation
+    print("🚀 Starting evaluation...\n")
     try:
         results = run_evaluation(
             dataset,
@@ -264,23 +262,23 @@ def main():
             ollama_url,
             model,
             progress_callback=_cli_progress,
-            motore_rag=motore_rag
+            motore_rag=rag_engine
         )
     except ConnectionError as e:
-        print(f"\n❌ Errore di connessione: {e}")
-        print("  Verifica che l'endpoint RAG e Ollama siano in esecuzione.")
+        print(f"\n❌ Connection error: {e}")
+        print("  Check that the RAG endpoint and Ollama are running.")
         sys.exit(1)
     except RuntimeError as e:
-        print(f"\n❌ Errore durante la valutazione: {e}")
+        print(f"\n❌ Error during evaluation: {e}")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Errore imprevisto: {type(e).__name__}: {e}")
+        print(f"\n❌ Unexpected error: {type(e).__name__}: {e}")
         sys.exit(1)
 
-    # 4) stampo i risultati
-    _stampa_risultati(results)
+    # 4) print the results
+    _print_results(results)
 
-    # 5) salvo su disco
+    # 5) save to disk
     try:
         eval_data = save_evaluation(
             results=results,
@@ -292,13 +290,13 @@ def main():
         )
         saved_files = sorted(EVAL_DIR.glob(f"{eval_data['name']}*.json"))
         if saved_files:
-            print(f"💾 Risultati salvati con successo in: {saved_files[-1]}")
+            print(f"💾 Results saved successfully in: {saved_files[-1]}")
         else:
-            print(f"💾 Risultati salvati nella cartella: {EVAL_DIR}")
+            print(f"💾 Results saved in folder: {EVAL_DIR}")
     except Exception as e:
-        print(f"⚠  Impossibile salvare i risultati: {e}")
+        print(f"⚠  Unable to save results: {e}")
 
-    print("\n✅ Operazione completata.")
+    print("\n✅ Operation completed.")
 
 if __name__ == "__main__":
     main()

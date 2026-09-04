@@ -1,7 +1,12 @@
 streamlit
 pandas
 requests
+beautifulsoup4
 sentence-transformers
-scikit-learn
+ragas
+langchain-ollama
+langchain-huggingface
+datasets
+nest-asyncio
+plotly
 numpy
-torchvision
