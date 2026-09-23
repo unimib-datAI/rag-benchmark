@@ -43,6 +43,27 @@ def clean_html_text(text):
     """Clean HTML tags and entities using BeautifulSoup."""
     if not text or ("<" not in text and "&" not in text):
         return text
+    soup = BeautifulSoup(text, 'html.parser')
+    return soup.get_text()
+
+def parse_llm_endpoint_or_key(endpoint_or_key: str, default_base_url: str = "http://localhost:11434") -> tuple[str, dict]:
+    """
+    Parses an LLM Judge endpoint or API key input.
+    If a URL is provided (http://, https://, localhost, etc.), returns (base_url, client_kwargs).
+    If an API key is provided, returns (default_base_url, client_kwargs with Authorization Bearer header).
+    """
+    val = (endpoint_or_key or "").strip()
+    if not val:
+        return default_base_url, {}
+    if val.startswith("http://") or val.startswith("https://"):
+        base_url = val.split("/api")[0]
+        return base_url, {}
+    if val.startswith("localhost") or val.startswith("127.0.0.1"):
+        base_url = f"http://{val}".split("/api")[0]
+        return base_url, {}
+    # Otherwise treat as API key
+    auth_header = val if val.lower().startswith("bearer ") else f"Bearer {val}"
+    return default_base_url, {"headers": {"Authorization": auth_header}}
     return BeautifulSoup(text, "html.parser").get_text(separator=" ", strip=True)
 
 def split_context_in_docs(context):
@@ -334,7 +355,13 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, p
 
     if progress_callback: progress_callback("ragas", 0, 1, "Computing RAGAS metrics...")
 
-    ragas_llm = ChatOllama(model=ollama_model, base_url=ollama_url.split("/api")[0], temperature=0, client_kwargs={"headers": {"Authorization": "Bearer 130e9216867047ceaccab3e8017c5123.joL1WY4giNPRo76atH5cJJOk"}})
+    base_url, client_kwargs = parse_llm_endpoint_or_key(ollama_url)
+    ragas_llm = ChatOllama(
+        model=ollama_model,
+        base_url=base_url,
+        temperature=0,
+        **({"client_kwargs": client_kwargs} if client_kwargs else {})
+    )
     ragas_embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
 
     try:

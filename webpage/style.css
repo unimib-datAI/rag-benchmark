@@ -442,3 +442,54 @@ button[kind="primary"]:active {
     border: 1px solid rgba(0, 230, 118, 0.3);
     text-shadow: 0 0 8px rgba(0, 230, 118, 0.3);
 }
+
+/* ── Expert Report Card (Clean & Minimal) ── */
+.expert-report-card {
+    background: rgba(22, 22, 32, 0.7);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(108, 92, 231, 0.25);
+    border-left: 4px solid #6c5ce7;
+    border-radius: 12px;
+    padding: 1.8rem 2rem;
+    margin-top: 1rem;
+    margin-bottom: 2rem;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+    color: #e2e8f0;
+    line-height: 1.65;
+}
+
+.expert-report-card h2, .expert-report-card h3 {
+    color: #f1f5f9;
+    font-weight: 700;
+    margin-top: 1.2rem;
+    margin-bottom: 0.5rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    padding-bottom: 0.3rem;
+    font-size: 1.15rem;
+}
+
+.expert-report-card h2:first-child, .expert-report-card h3:first-child {
+    margin-top: 0;
+}
+
+.expert-report-card p {
+    color: #cbd5e1;
+    font-size: 0.95rem;
+    margin-bottom: 0.8rem;
+}
+
+.expert-report-card ul {
+    margin-left: 1.2rem;
+    margin-bottom: 0.8rem;
+    color: #cbd5e1;
+}
+
+.expert-report-card li {
+    margin-bottom: 0.35rem;
+    font-size: 0.95rem;
+}
+
+.expert-report-card strong {
+    color: #ffffff;
+}

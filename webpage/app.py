@@ -10,7 +10,7 @@ from pathlib import Path
 
 from langchain_ollama import ChatOllama
 
-from evaluator import run_evaluation
+from evaluator import run_evaluation, parse_llm_endpoint_or_key
 from persistence import save_evaluation, list_evaluations, load_evaluation, delete_evaluation
 
 import dashboard as dash
@@ -54,7 +54,13 @@ BENCHMARK_SHORT = {
 def invoke_ollama(prompt: str, ollama_url: str, model: str) -> str:
     """Call Ollama via langchain_ollama and return the response as a string."""
     try:
-        llm = ChatOllama(model=model, base_url=ollama_url, temperature=0)
+        base_url, client_kwargs = parse_llm_endpoint_or_key(ollama_url)
+        llm = ChatOllama(
+            model=model,
+            base_url=base_url,
+            temperature=0,
+            **({"client_kwargs": client_kwargs} if client_kwargs else {})
+        )
         return llm.invoke(prompt).content
     except Exception as exc:
         st.error(f"Ollama request failed: {exc}")
@@ -81,6 +87,8 @@ if "running" not in st.session_state:
     st.session_state.running = False
 if "results" not in st.session_state:
     st.session_state.results = []
+if "current_eval_name" not in st.session_state:
+    st.session_state.current_eval_name = ""
 
 # sidebar
 with st.sidebar:
@@ -96,8 +104,13 @@ with st.sidebar:
     st.markdown('<hr class="sidebar-divider">', unsafe_allow_html=True)
 
     st.markdown("### LLM Judge")
-    st.markdown('<p class="sidebar-label">Ollama Base URL</p>', unsafe_allow_html=True)
-    ollama_url = st.text_input("ollama_url", "http://localhost:11434", label_visibility="collapsed")
+    st.markdown('<p class="sidebar-label">URL o chiave API LLM AS A JUDGE</p>', unsafe_allow_html=True)
+    ollama_url = st.text_input(
+        "ollama_url",
+        "http://localhost:11434",
+        placeholder="es. http://localhost:11434 oppure la tua chiave API",
+        label_visibility="collapsed",
+    )
 
     st.markdown('<p class="sidebar-label">Model</p>', unsafe_allow_html=True)
     ollama_model = st.selectbox("model_select", options=["gemma4:31b-cloud"], index=0, label_visibility="collapsed")
@@ -116,22 +129,37 @@ with st.sidebar:
     st.caption(f"{len(selected_names)} of {len(BENCHMARK_MAPPING)} selected")
 
     st.markdown('<p class="sidebar-label" style="margin-top: 1rem;">Queries per Benchmark</p>', unsafe_allow_html=True)
-    sample_size_param = st.slider("sample_size_param", min_value=1, max_value=50, value=3, step=1, label_visibility="collapsed")
+    sample_size_param = st.number_input("sample_size_param", min_value=1, value=3, step=1, label_visibility="collapsed")
 
     st.markdown('<p class="sidebar-label" style="margin-top: 1rem;">Selection Mode</p>', unsafe_allow_html=True)
-    query_selection_mode = st.radio("query_selection_mode", options=["Random", "Fixed"], horizontal=True, label_visibility="collapsed")
+    query_selection_mode = st.radio("query_selection_mode", options=["Random", "Fixed", "Repeat Previous"], horizontal=True, label_visibility="collapsed")
+
+    st.markdown('<hr class="sidebar-divider">', unsafe_allow_html=True)
+
+    st.markdown("### Evaluation Name")
+    st.markdown('<p class="sidebar-label">Evaluation Name <span style="color:#FF5252">*</span></p>', unsafe_allow_html=True)
+    eval_name_input = st.text_input(
+        "eval_name_input",
+        placeholder="e.g. test_bm25_v1",
+        label_visibility="collapsed",
+    )
+    eval_name = eval_name_input.strip() if eval_name_input else ""
+
+    if not eval_name:
+        st.caption("⚠️ Evaluation name is required to start")
 
     st.markdown('<hr class="sidebar-divider">', unsafe_allow_html=True)
 
     # start/stop button
     if not st.session_state.running:
-        can_start = len(selected_files) > 0
+        can_start = len(selected_files) > 0 and bool(eval_name)
         if st.button("Start Evaluation", type="primary", disabled=not can_start, width='stretch'):
             st.session_state.running = True
             st.session_state.results = []
             st.session_state.selected_files = selected_files
             st.session_state.sample_size_param = sample_size_param
             st.session_state.query_selection_mode = query_selection_mode
+            st.session_state.eval_name = eval_name
             if "llm_advice" in st.session_state:
                 del st.session_state.llm_advice
             st.rerun()
@@ -147,6 +175,7 @@ if not st.session_state.running and not st.session_state.results:
         last_eval = saved_evals[0]
         complete_evals = load_evaluation(last_eval["filepath"])
         st.session_state.results = complete_evals.get("results", [])
+        st.session_state.current_eval_name = complete_evals.get("name", "")
 
 # main tabs
 tab_evaluation, tab_explore = st.tabs(["🔬 Evaluation", "📊 Explore"])
@@ -161,6 +190,17 @@ with tab_evaluation:
         progress_bar = st.progress(0)
         status_text = st.empty()
 
+        previous_eval_ids = set()
+        if st.session_state.get("query_selection_mode") == "Repeat Previous":
+            saved_evals = list_evaluations()
+            if saved_evals:
+                last_eval = load_evaluation(saved_evals[0]["filepath"])
+                for res in last_eval.get("results", []):
+                    previous_eval_ids.add(res.get("query_id"))
+            else:
+                st.warning("No previous evaluation found. Falling back to Fixed selection.")
+                st.session_state.query_selection_mode = "Fixed"
+
         # datasets are loaded from the selected files in the sidebar
         dataset_items = []
         files_to_run = st.session_state.get("selected_files", list(BENCHMARK_MAPPING.values()))
@@ -169,6 +209,13 @@ with tab_evaluation:
             if path.exists():
                 with open(path, 'r', encoding='utf-8-sig') as f:
                     elements = json.load(f)
+                    
+                    if st.session_state.get("query_selection_mode") == "Repeat Previous":
+                        if previous_eval_ids:
+                            filtered_elements = [e for e in elements if e["id"] in previous_eval_ids]
+                            dataset_items.extend(filtered_elements)
+                        continue
+
                     # MTRAG special case: take only a certain number of multi-turn conversations, not single queries
                     if "MTRAG" in file_name:
                         conversations = defaultdict(list)
@@ -241,8 +288,10 @@ with tab_evaluation:
             sample_size=st.session_state.get('sample_size_param', 3),
             benchmarks_used=files_to_run,
             rag_engine=motore_rag,
+            name=st.session_state.get('eval_name', ''),
         )
         st.session_state.last_saved_id = saved['id']
+        st.session_state.current_eval_name = saved['name']
 
         st.session_state.running = False
         status_text.empty()
@@ -260,7 +309,11 @@ with tab_evaluation:
         avg_recall = df['recall_voto'].mean() if 'recall_voto' in df.columns else 0.0
 
         # metrics overview (4 RAGAS metrics)
-        st.markdown('<div class="section-title">Overview (Ragas Metrics)</div>', unsafe_allow_html=True)
+        curr_name = st.session_state.get("current_eval_name", "")
+        if curr_name:
+            st.markdown(f'<div class="section-title">Overview &mdash; <span style="color: #a29bfe; font-size: 1.1rem; text-transform: none; margin-left: 8px;">{curr_name}</span></div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="section-title">Overview (Ragas Metrics)</div>', unsafe_allow_html=True)
         col1, col2, col3, col4 = st.columns(4)
         for col, label, val in [(col1, "Answer Correctness", avg_c), (col2, "Faithfulness", avg_f), (col3, "Context Precision", avg_r), (col4, "Context Recall", avg_recall)]:
             with col:
@@ -337,45 +390,83 @@ with tab_evaluation:
                 with st.expander("Retrieved Documents"):
                     st.text(rep['docs'])
 
-        # diagnostics
-        st.markdown('<div class="section-title">Diagnostics & Solutions</div>', unsafe_allow_html=True)
+        # diagnostics and expert advice
+        st.markdown('<div class="section-title">Diagnostics & Expert Report</div>', unsafe_allow_html=True)
+
+        html_issues = dash.get_diagnostics_html(avg_r, avg_f, avg_c)
+        st.markdown(html_issues, unsafe_allow_html=True)
 
         worst_query = min(reports, key=lambda x: x['correctness_voto'] + x['retrieval_voto'], default=None)
+        best_query = max(reports, key=lambda x: x['correctness_voto'] + x['retrieval_voto'], default=None)
+
         if worst_query and "llm_advice" not in st.session_state:
-            with st.spinner("🧠 AI is writing the custom diagnostic report..."):
-                # build the prompt for the expert
-                PROMPT_EXPERT = f"""Act as an AI Architect expert in RAG.
-            I have evaluated my RAG system. Here are the averages:
-            - Context Precision: {avg_r:.2f}
-            - Faithfulness: {avg_f:.2f}
-            - Answer Correctness: {avg_c:.2f}
+            with st.spinner("🧠 AI RAG Expert is writing the analysis report..."):
+                # build per-benchmark summary
+                benchmark_summary = ""
+                for src in sources:
+                    src_df = df[df['source'] == src]
+                    recall_str = f"{src_df['recall_voto'].mean():.2f}" if 'recall_voto' in src_df.columns else "N/A"
+                    benchmark_summary += (
+                        f"  - {src}: Correctness={src_df['correctness_voto'].mean():.2f}, "
+                        f"Faithfulness={src_df['faithfulness_voto'].mean():.2f}, "
+                        f"Precision={src_df['retrieval_voto'].mean():.2f}, "
+                        f"Recall={recall_str} "
+                        f"({len(src_df)} queries)\n"
+                    )
 
-            Here is the query where the system performed worst:
-            QUESTION: {worst_query['domanda']}
-            RAG ANSWER: {worst_query['risposta_rag']}
-            GOLD ANSWER: {worst_query['gold']}
+                PROMPT_EXPERT = f"""You are a Senior RAG System Architect. Provide a clear, clean and concise evaluation report.
 
-            Write an analysis of maximum 4 sentences highlighting the main problem and giving 2 concrete technical advice. Write in English using Markdown formatting."""
+EVALUATION METRICS (averaged over {len(reports)} queries):
+- Answer Correctness: {avg_c:.2f}
+- Faithfulness: {avg_f:.2f}
+- Context Precision: {avg_r:.2f}
+- Context Recall: {avg_recall:.2f}
+
+PER-BENCHMARK BREAKDOWN:
+{benchmark_summary}
+
+WORST QUERY:
+  Question: {worst_query['domanda']}
+  RAG Answer: {worst_query['risposta_rag'][:300]}
+  Gold Answer: {worst_query['gold']}
+  Scores: Correctness={worst_query['correctness_voto']:.2f}, Faithfulness={worst_query['faithfulness_voto']:.2f}, Precision={worst_query['retrieval_voto']:.2f}
+
+BEST QUERY:
+  Question: {best_query['domanda']}
+  RAG Answer: {best_query['risposta_rag'][:300]}
+  Gold Answer: {best_query['gold']}
+  Scores: Correctness={best_query['correctness_voto']:.2f}, Faithfulness={best_query['faithfulness_voto']:.2f}, Precision={best_query['retrieval_voto']:.2f}
+
+Write a clean, easy-to-read Markdown report with these sections:
+
+### 📊 Summary
+2-3 concise sentences summarizing what the numbers show.
+
+### ✅ Strengths
+- 2 bullet points on what works well.
+
+### ⚠️ Main Bottlenecks
+- 2 bullet points explaining where and why it fails (cite the metrics or benchmark).
+
+### 🔧 Recommended Fixes
+- 3 clear, actionable engineering steps to solve the issue.
+
+### 🔮 Next Steps
+- 2 future architecture enhancements.
+
+Keep the language clear, concise and directly actionable. Total length under 300 words."""
 
                 st.session_state.llm_advice = invoke_ollama(PROMPT_EXPERT, ollama_url, ollama_model)
 
         llm_advice_text = st.session_state.get("llm_advice", "")
-        html_issues = dash.get_diagnostics_html(avg_r, avg_f, avg_c)
 
-        col_d1, col_d2 = st.columns(2)
-
-        with col_d1:
-            st.markdown(html_issues, unsafe_allow_html=True)
-
-        with col_d2:
-            st.markdown('<div class="diag-panel solutions" style="margin-bottom: 1rem;"><h3>🤖 Expert Verdict</h3></div>', unsafe_allow_html=True)
-            if llm_advice_text:
-                st.success(llm_advice_text)
-            else:
-                st.warning("LLM Verdict not available.")
+        if llm_advice_text:
+            st.markdown(f'<div class="expert-report-card">{llm_advice_text}</div>', unsafe_allow_html=True)
+        else:
+            st.info("Expert analysis not available. Make sure the LLM Judge is accessible.")
 
         # footer with evaluation info
-        st.markdown(dash.get_footer_html(len(reports), ollama_model, datetime.now().strftime('%d/%m/%Y %H:%M')), unsafe_allow_html=True)
+        st.markdown(dash.get_footer_html(len(reports), ollama_model, datetime.now().strftime('%d/%m/%Y %H:%M'), st.session_state.get("current_eval_name", "")), unsafe_allow_html=True)
 
 # explore tab - evaluation history and comparison
 with tab_explore:
@@ -438,6 +529,7 @@ with tab_explore:
                 if st.button("📂 Open", key=f"explore_load_{idx}", width='stretch'):
                     full_eval = load_evaluation(ev["filepath"])
                     st.session_state.results = full_eval.get("results", [])
+                    st.session_state.current_eval_name = full_eval.get("name", "")
                     st.session_state.explore_msg = f"✅ Data for '{ev['name']}' loaded! Switch to the '🔬 Evaluation' tab above to view it."
                     st.rerun()
 
@@ -460,36 +552,145 @@ with tab_explore:
             table_agg_rows = []
             for ev in selected_for_compare:
                 agg = ev.get("aggregate", {})
-                row = {"Evaluation": ev["name"]}
+                row = {"Evaluation": ev["name"], "RAG Engine": ev.get("rag_engine", "—"), "LLM Judge": ev.get("model", "—")}
                 for k, label in zip(metric_keys, metric_labels):
                     row[label] = round(agg.get(k, 0.0), 2)
                 table_agg_rows.append(row)
             
             st.dataframe(pd.DataFrame(table_agg_rows), use_container_width=True)
 
-            # Detailed table of single queries compared
-            st.markdown('<div class="section-title">Compared Single Queries Detail</div>', unsafe_allow_html=True)
-            query_map = {}
+            # load full results for all selected evaluations
+            loaded_evals = {}
             for ev in selected_for_compare:
-                full_eval = load_evaluation(ev["filepath"])
-                eval_name = ev["name"]
-                for res in full_eval.get("results", []):
+                loaded_evals[ev["name"]] = load_evaluation(ev["filepath"])
+
+            # build a map: query_id -> {eval_name: full_result_dict}
+            query_results_map: dict[str, dict] = {}
+            query_meta: dict[str, dict] = {}
+            for ev in selected_for_compare:
+                for res in loaded_evals[ev["name"]].get("results", []):
                     qid = res.get("query_id", "")
-                    if qid not in query_map:
-                        query_map[qid] = {
-                            ("Info", "Query ID"): qid,
-                            ("Info", "Benchmark"): res.get("source", ""),
-                            ("Info", "Question"): res.get("domanda", ""),
+                    if qid not in query_results_map:
+                        query_results_map[qid] = {}
+                        query_meta[qid] = {
+                            "source": res.get("source", ""),
+                            "domanda": res.get("domanda", ""),
+                            "gold": res.get("gold", ""),
                         }
-                    query_map[qid][("Answer Correctness", eval_name)] = round(res.get("correctness_voto", 0.0), 2)
-                    query_map[qid][("Faithfulness", eval_name)] = round(res.get("faithfulness_voto", 0.0), 2)
-                    query_map[qid][("Context Precision", eval_name)] = round(res.get("retrieval_voto", 0.0), 2)
-                    query_map[qid][("Context Recall", eval_name)] = round(res.get("recall_voto", 0.0), 2)
-            
-            if query_map:
-                df_compare = pd.DataFrame(list(query_map.values()))
-                df_compare.columns = pd.MultiIndex.from_tuples(df_compare.columns)
-                st.dataframe(df_compare, use_container_width=True)
+                    query_results_map[qid][ev["name"]] = res
+
+            # Compared Single Queries summary table
+            st.markdown('<div class="section-title">Compared Single Queries Detail</div>', unsafe_allow_html=True)
+            cmp_table_rows = []
+            for qid in sorted(query_results_map.keys()):
+                meta = query_meta[qid]
+                row = {"Query ID": qid, "Benchmark": _short_source(meta["source"])}
+                for ev in selected_for_compare:
+                    res = query_results_map[qid].get(ev["name"])
+                    corr = res.get("correctness_voto") if res else None
+                    faith = res.get("faithfulness_voto") if res else None
+                    try:
+                        row[f"Corr ({ev['name']})"] = round(float(corr), 2) if corr is not None else None
+                    except (ValueError, TypeError):
+                        row[f"Corr ({ev['name']})"] = None
+                    try:
+                        row[f"Faith ({ev['name']})"] = round(float(faith), 2) if faith is not None else None
+                    except (ValueError, TypeError):
+                        row[f"Faith ({ev['name']})"] = None
+                cmp_table_rows.append(row)
+            if cmp_table_rows:
+                cmp_df = pd.DataFrame(cmp_table_rows)
+                numeric_cols = [c for c in cmp_df.columns if c.startswith("Corr") or c.startswith("Faith")]
+                for c in numeric_cols:
+                    cmp_df[c] = pd.to_numeric(cmp_df[c], errors='coerce')
+                cmp_fmt = {c: '{:.2f}' for c in numeric_cols}
+                st.dataframe(
+                    cmp_df.style.format(cmp_fmt, na_rep="—")
+                    .background_gradient(subset=numeric_cols, cmap='RdYlGn', vmin=0, vmax=1),
+                    width='stretch', hide_index=True,
+                )
+
+            # Interactive single-query side-by-side comparison
+            if len(selected_for_compare) >= 2:
+                st.markdown('<div class="section-title">🔍 Single Query Deep Comparison</div>', unsafe_allow_html=True)
+                st.caption("Select a query to see side-by-side answers, contexts and metrics from each evaluation.")
+
+                # find queries present in at least 2 evaluations
+                shared_qids = [qid for qid, evals in query_results_map.items() if len(evals) >= 2]
+                if shared_qids:
+                    query_options = []
+                    for qid in sorted(shared_qids):
+                        meta = query_meta[qid]
+                        q_short = meta["domanda"][:80] + "…" if len(meta["domanda"]) > 80 else meta["domanda"]
+                        query_options.append(f"{qid}  |  {_short_source(meta['source'])}  |  {q_short}")
+
+                    selected_query_label = st.selectbox(
+                        "Select query to compare",
+                        options=query_options,
+                        key="explore_deep_compare_query",
+                        label_visibility="collapsed",
+                    )
+
+                    if selected_query_label:
+                        selected_qid = selected_query_label.split("  |  ")[0].strip()
+                        meta = query_meta[selected_qid]
+
+                        st.markdown("**Question**")
+                        st.code(meta["domanda"], language=None)
+                        st.markdown("**Gold Answer (Ground Truth)**")
+                        st.success(meta["gold"])
+
+                        # side-by-side columns for each evaluation
+                        eval_names_with_data = [ev["name"] for ev in selected_for_compare if ev["name"] in query_results_map.get(selected_qid, {})]
+                        cols = st.columns(len(eval_names_with_data))
+
+                        for col_idx, eval_name in enumerate(eval_names_with_data):
+                            res = query_results_map[selected_qid][eval_name]
+                            ev_info = next((e for e in selected_for_compare if e["name"] == eval_name), {})
+
+                            with cols[col_idx]:
+                                st.markdown(f"#### 📋 {eval_name}")
+                                st.caption(f"RAG: **{ev_info.get('rag_engine', '?')}** · Judge: **{ev_info.get('model', '?')}**")
+
+                                # metrics mini-cards
+                                metrics_data = [
+                                    ("C.Prec", res.get("retrieval_voto", 0)),
+                                    ("C.Rec", res.get("recall_voto", 0)),
+                                    ("Faith", res.get("faithfulness_voto", 0)),
+                                    ("Corr", res.get("correctness_voto", 0)),
+                                    ("Relev", res.get("relevancy_voto", 0)),
+                                ]
+                                metrics_html = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:0.8rem;">'
+                                for m_label, m_val in metrics_data:
+                                    m_val_f = float(m_val) if pd.notna(m_val) else 0.0
+                                    m_color = {"green": "#00E676", "yellow": "#FFC400", "red": "#FF1744"}.get(_value_color(m_val_f), "#a2a2c0")
+                                    metrics_html += f'<span style="background:rgba(255,255,255,0.05);border-radius:8px;padding:4px 8px;font-size:0.75rem;">{m_label}: <strong style="color:{m_color}">{m_val_f:.2f}</strong></span>'
+                                metrics_html += '</div>'
+                                st.markdown(metrics_html, unsafe_allow_html=True)
+
+                                st.markdown("**RAG Answer**")
+                                st.info(res.get("risposta_rag", "N/A"))
+
+                                with st.expander("📄 Retrieved Documents"):
+                                    st.text(res.get("docs", "No documents available"))
+
+                        # delta analysis between evaluations
+                        if len(eval_names_with_data) == 2:
+                            st.markdown("---")
+                            st.markdown("##### 📊 Delta Analysis")
+                            res_a = query_results_map[selected_qid][eval_names_with_data[0]]
+                            res_b = query_results_map[selected_qid][eval_names_with_data[1]]
+                            delta_cols = st.columns(5)
+                            for d_col, m_key, m_label in zip(delta_cols,
+                                ["retrieval_voto", "recall_voto", "faithfulness_voto", "correctness_voto", "relevancy_voto"],
+                                ["C. Precision", "C. Recall", "Faithfulness", "Correctness", "Relevancy"]):
+                                val_a = float(res_a.get(m_key, 0) or 0)
+                                val_b = float(res_b.get(m_key, 0) or 0)
+                                delta = val_b - val_a
+                                with d_col:
+                                    st.metric(m_label, f"{val_b:.2f}", f"{delta:+.2f}")
+                else:
+                    st.info("No shared queries found between the selected evaluations. Make sure the evaluations were run on overlapping datasets.")
 
             # radar or bar chart 
             st.markdown('<div class="compare-chart">', unsafe_allow_html=True)
@@ -507,14 +708,11 @@ with tab_explore:
 
             if chart_type == "Radar":
                 fig = go.Figure()
-                # loop adding a trace for each selected evaluation
                 for i, ev in enumerate(selected_for_compare):
                     agg = ev.get("aggregate", {})
-                    # used to close the radar polygon, so add the first value at the end of the list
                     values = [agg.get(k, 0) for k in metric_keys]
                     values_closed = values + [values[0]] 
                     labels_closed = metric_labels + [metric_labels[0]]
-                    # add trace to radar chart
                     fig.add_trace(go.Scatterpolar(
                         r=values_closed,
                         theta=labels_closed,
@@ -536,7 +734,6 @@ with tab_explore:
                     margin=dict(t=40, b=40),
                 )
             else:
-                # grouped bars
                 fig = go.Figure()
                 for i, ev in enumerate(selected_for_compare):
                     agg = ev.get("aggregate", {})
@@ -565,7 +762,6 @@ with tab_explore:
             # breakdown table per benchmark
             st.markdown('<div class="section-title">Per Benchmark Detail</div>', unsafe_allow_html=True)
 
-            # collect all benchmark names from selected evaluations
             all_benchmarks: set[str] = set()
             for ev in selected_for_compare:
                 all_benchmarks.update(ev.get("per_benchmark", {}).keys())
@@ -576,19 +772,23 @@ with tab_explore:
                     row: dict[str, object] = {"Benchmark": _short_source(bm)}
                     for ev in selected_for_compare:
                         bm_data = ev.get("per_benchmark", {}).get(bm, {})
-                        row[ev["name"]] = bm_data.get("answer_correctness", "—")
+                        val = bm_data.get("answer_correctness")
+                        try:
+                            row[ev["name"]] = round(float(val), 2) if val is not None and val != "—" else None
+                        except (ValueError, TypeError):
+                            row[ev["name"]] = None
                     table_rows.append(row)
                 compare_df = pd.DataFrame(table_rows)
 
-                # format numeric columns
-                fmt = {}
-                for c in compare_df.columns:
-                    if c != "Benchmark":
-                        fmt[c] = '{:.2f}'
+                numeric_cols = [c for c in compare_df.columns if c != "Benchmark"]
+                for c in numeric_cols:
+                    compare_df[c] = pd.to_numeric(compare_df[c], errors='coerce')
+
+                fmt = {c: '{:.2f}' for c in numeric_cols}
                 st.dataframe(
                     compare_df.style.format(fmt, na_rep="—")
                     .background_gradient(
-                        subset=[c for c in compare_df.columns if c != "Benchmark"],
+                        subset=numeric_cols,
                         cmap='RdYlGn', vmin=0, vmax=1,
                     ),
                     width='stretch',
@@ -610,9 +810,97 @@ with tab_explore:
                 '  </div>'
                 '  <div class="eval-card-body">'
                 f'    <span class="eval-card-detail"><strong>{best_ev["name"]}</strong></span>'
+                f'    <span class="eval-card-detail">RAG: {best_ev.get("rag_engine", "?")}</span>'
                 f'    <span class="eval-card-detail">Model: {best_ev["model"]}</span>'
                 f'    <span class="eval-card-detail">{best_ts}</span>'
                 '  </div>'
                 '</div>'
             )
             st.markdown(summary_html, unsafe_allow_html=True)
+
+            # Comparative Expert RAG Report (LLM-generated)
+            if len(selected_for_compare) >= 2:
+                st.markdown('<div class="section-title">🤖 Comparative RAG Expert Report</div>', unsafe_allow_html=True)
+
+                compare_report_key = "compare_report_" + "_".join(sorted(ev["id"] for ev in selected_for_compare))
+
+                if compare_report_key not in st.session_state:
+                    if st.button("🧠 Generate Comparative Expert Analysis", key="btn_compare_report", type="primary"):
+                        with st.spinner("🧠 AI RAG Expert is analyzing the evaluations..."):
+                            # build comparison summary for LLM
+                            eval_summaries = []
+                            for ev in selected_for_compare:
+                                agg = ev.get("aggregate", {})
+                                summary_text = (
+                                    f"- **{ev['name']}** (RAG: {ev.get('rag_engine', '?')}, Judge: {ev.get('model', '?')}, "
+                                    f"Queries: {ev.get('num_queries', '?')})\n"
+                                    f"  Correctness={agg.get('answer_correctness', 0):.2f}, "
+                                    f"Faithfulness={agg.get('faithfulness', 0):.2f}, "
+                                    f"Context Precision={agg.get('context_precision', 0):.2f}, "
+                                    f"Context Recall={agg.get('context_recall', 0):.2f}"
+                                )
+                                summary_text += "\n  Per-benchmark: "
+                                for bm_name, bm_data in ev.get("per_benchmark", {}).items():
+                                    summary_text += f"{_short_source(bm_name)}(corr={bm_data.get('answer_correctness', 0):.2f}) "
+                                eval_summaries.append(summary_text)
+
+                            # find a shared query where the two evals differ the most
+                            example_query_text = ""
+                            if shared_qids:
+                                max_delta_qid = None
+                                max_delta = -1
+                                for qid in shared_qids:
+                                    scores = []
+                                    for ev in selected_for_compare:
+                                        r = query_results_map[qid].get(ev["name"])
+                                        if r:
+                                            scores.append(float(r.get("correctness_voto", 0) or 0))
+                                    if len(scores) >= 2:
+                                        delta = abs(max(scores) - min(scores))
+                                        if delta > max_delta:
+                                            max_delta = delta
+                                            max_delta_qid = qid
+                                if max_delta_qid:
+                                    meta_q = query_meta[max_delta_qid]
+                                    example_query_text = f"\nMost divergent query (ID: {max_delta_qid}):\n  Question: {meta_q['domanda']}\n  Gold Answer: {meta_q['gold']}\n"
+                                    for ev in selected_for_compare:
+                                        r = query_results_map[max_delta_qid].get(ev["name"])
+                                        if r:
+                                            example_query_text += f"  [{ev['name']}] Answer: {r.get('risposta_rag', 'N/A')[:300]} | Correctness: {r.get('correctness_voto', 0):.2f}\n"
+
+                            PROMPT_COMPARE = f"""You are a Senior RAG System Architect conducting a comparative analysis of multiple RAG evaluation runs.
+
+Here are the evaluations being compared:
+{chr(10).join(eval_summaries)}
+
+{example_query_text}
+
+Write a structured Markdown comparison report with these sections:
+
+## 📊 Comparative Overview
+Brief summary comparing the evaluations (which is better overall and by how much).
+
+## ⚔️ Head-to-Head Analysis
+For each key metric (Correctness, Faithfulness, Context Precision, Context Recall), explain which evaluation wins and what that implies about the RAG pipeline or LLM Judge.
+
+## ✅ What Works Best
+Identify the strongest configuration and explain WHY it works better (2-3 bullet points).
+
+## ❌ Key Weaknesses Found
+Highlight the weakest areas across both evaluations (2-3 bullet points with specific metric evidence).
+
+## 🔧 Recommended Actions
+Give 3-4 concrete, actionable technical recommendations to improve the weaker system (e.g., "Switch from BM25 to hybrid search", "Increase chunk overlap", "Add a re-ranking step with cross-encoder").
+
+## 🔮 Strategic Outlook
+2 forward-looking suggestions for the overall RAG architecture evolution.
+
+Write in English, be specific with numbers, keep it under 500 words total."""
+
+                            st.session_state[compare_report_key] = invoke_ollama(PROMPT_COMPARE, ollama_url, ollama_model)
+                            st.rerun()
+                else:
+                    st.markdown(st.session_state[compare_report_key])
+                    if st.button("🔄 Regenerate Report", key="btn_regen_compare_report"):
+                        del st.session_state[compare_report_key]
+                        st.rerun()

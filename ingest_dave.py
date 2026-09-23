@@ -220,13 +220,13 @@ def main():
         print(f"File non trovato: {crag_path}")
 
     # MTRAG ha tanti file .jsonl nella cartella corpora/document_level
-    #mtrag_dir = BASE_DIR / "Benchmarks" / "mt-rag-benchmark" / "corpora" / "document_level"
-    #if mtrag_dir.exists():
-    #    for jsonl_file in glob.glob(str(mtrag_dir / "**" / "*.jsonl"), recursive=True):
-     #       if os.path.isfile(jsonl_file):
-      #          ingest_file(client, jsonl_file, "MTRAG")
-   # else:
-     #   print(f"Cartella non trovata: {mtrag_dir}")
+    mtrag_dir = BASE_DIR / "Benchmarks" / "mt-rag-benchmark" / "corpora" / "document_level"
+    if mtrag_dir.exists():
+        for jsonl_file in glob.glob(str(mtrag_dir / "**" / "*.jsonl"), recursive=True):
+           if os.path.isfile(jsonl_file):
+             ingest_file(client, jsonl_file, "MTRAG")
+    else:
+        print(f"Cartella non trovata: {mtrag_dir}")
 
     # Ingest SQuAD-it
     squad_path = BASE_DIR / "Run" / "squad_corpus.json"

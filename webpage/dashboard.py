@@ -69,8 +69,9 @@ def get_diagnostics_html(avg_r: float, avg_f: float, avg_c: float):
 
     return html_issues
 
-def get_footer_html(num_reports: int, ollama_model: str, time_str: str) -> str:
+def get_footer_html(num_reports: int, ollama_model: str, time_str: str, eval_name: str = "") -> str:
+    name_prefix = f"{eval_name}  &middot;  " if eval_name else ""
     return f"""
 <div class="footer-bar">
-    SuperBenchmark  &middot;  {num_reports} queries  &middot;  Judge: {ollama_model}  &middot;  {time_str}
+    {name_prefix}SuperBenchmark  &middot;  {num_reports} queries  &middot;  Judge: {ollama_model}  &middot;  {time_str}
 </div>"""

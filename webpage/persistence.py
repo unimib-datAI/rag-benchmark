@@ -9,11 +9,20 @@ EVAL_DIR.mkdir(exist_ok=True)
 
 
 def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: float,
-                    sample_size: int, benchmarks_used: list[str], rag_engine: str) -> dict:
+                    sample_size: int, benchmarks_used: list[str], rag_engine: str = "Unknown",
+                    name: str = "") -> dict:
     """Saves the evaluation results to a JSON file."""
+    import re
     eval_id = str(uuid.uuid4())[:8]
     timestamp = datetime.now()
-    name = f"eval_{timestamp.strftime('%Y-%m-%d_%H-%M')}_{model.split(':')[0]}"
+
+    clean_name = name.strip() if name else ""
+    if not clean_name:
+        clean_name = f"eval_{timestamp.strftime('%Y-%m-%d_%H-%M')}_{model.split(':')[0]}"
+
+    safe_filename = re.sub(r'[\\/*?:"<>|\s]+', '_', clean_name).strip('._')
+    if not safe_filename:
+        safe_filename = f"eval_{eval_id}"
 
     # calculate aggregate averages with pandas
     import pandas as pd
@@ -42,9 +51,12 @@ def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: f
                 "count": len(src_df),
             }
 
+    filepath = EVAL_DIR / f"{safe_filename}_{eval_id}.json"
+
     evaluation = {
         "id": eval_id,
-        "name": name,
+        "name": clean_name,
+        "filepath": str(filepath),
         "timestamp": timestamp.isoformat(),
         "model": model,
         "endpoint": endpoint,
@@ -57,7 +69,6 @@ def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: f
         "results": results,
     }
 
-    filepath = EVAL_DIR / f"{name}_{eval_id}.json"
     filepath.write_text(json.dumps(evaluation, ensure_ascii=False, indent=2), encoding='utf-8')
     return evaluation
 
@@ -65,15 +76,17 @@ def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: f
 def list_evaluations() -> list[dict]:
     """Returns the list of saved evaluations (without full results, which are too heavy)."""
     evals = []
-    for f in sorted(EVAL_DIR.glob("eval_*.json"), reverse=True):
+    for f in EVAL_DIR.glob("*.json"):
         try:
             data = json.loads(f.read_text(encoding='utf-8'))
+            if "id" not in data or "name" not in data:
+                continue
             # take only metadata; load results only when needed
             evals.append({
                 "id": data["id"],
                 "name": data["name"],
-                "timestamp": data["timestamp"],
-                "model": data["model"],
+                "timestamp": data.get("timestamp", ""),
+                "model": data.get("model", "Unknown"),
                 "endpoint": data.get("endpoint", ""),
                 "threshold": data.get("threshold", 0.0),
                 "sample_size": data.get("sample_size", 0),
@@ -84,9 +97,10 @@ def list_evaluations() -> list[dict]:
                 "num_queries": len(data.get("results", [])),
                 "filepath": str(f),
             })
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, OSError):
             # corrupted or incomplete file, skip it
             continue
+    evals.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
     return evals
 
 

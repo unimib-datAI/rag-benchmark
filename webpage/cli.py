@@ -72,6 +72,12 @@ def interactive_menu():
 
     while True:
         print("\n--- Evaluation Configuration ---")
+        while True:
+            eval_name = prompt_input("Enter Evaluation Name (mandatory)", "").strip()
+            if eval_name:
+                break
+            print("Evaluation name is mandatory. Please enter a valid name.")
+
         endpoint = prompt_input("Enter RAG Base URL", def_endpoint)
         rag_engine = prompt_input("Select RAG Engine (DAVE or Local RAG)", def_rag_engine)
 
@@ -83,7 +89,7 @@ def interactive_menu():
             except ValueError:
                 print("Please enter a valid decimal number.")
 
-        ollama_url = prompt_input("Enter Ollama URL", def_ollama_url)
+        ollama_url = prompt_input("Enter URL or API Key for LLM Judge", def_ollama_url)
         model = prompt_input("Enter LLM Judge model", def_model)
 
         print(f"\nAvailable benchmarks: {', '.join(ALL_BENCHMARKS)}")
@@ -118,11 +124,12 @@ def interactive_menu():
             print("Please enter 'R' for Random or 'F' for Fixed.")
 
         print("\n--- Configuration Summary ---")
-        print(f"RAG Base URL:    {endpoint}")
-        print(f"RAG Engine:      {rag_engine}")
-        print(f"Threshold:       {threshold}")
-        print(f"Ollama URL:      {ollama_url}")
-        print(f"LLM Model:       {model}")
+        print(f"Evaluation Name:    {eval_name}")
+        print(f"RAG Base URL:       {endpoint}")
+        print(f"RAG Engine:         {rag_engine}")
+        print(f"Threshold:          {threshold}")
+        print(f"LLM Judge (URL/Key): {ollama_url}")
+        print(f"LLM Model:          {model}")
         print(f"Benchmarks:      {', '.join(benchmarks)}")
         print(f"Queries/Bench:   {sample_size}")
         print(f"Query mode:      {selection_mode}")
@@ -140,7 +147,7 @@ def interactive_menu():
             config["selection_mode"] = mode_str
             save_config(config)
 
-            return endpoint, threshold, rag_engine, ollama_url, model, benchmarks, sample_size, selection_mode
+            return eval_name, endpoint, threshold, rag_engine, ollama_url, model, benchmarks, sample_size, selection_mode
 
 
 # data loading and evaluation
@@ -240,7 +247,7 @@ def main():
     print(HEADER)
 
     # 1) interactive configuration
-    endpoint, threshold, rag_engine, ollama_url, model, benchmarks, sample_size, selection_mode = interactive_menu()
+    eval_name, endpoint, threshold, rag_engine, ollama_url, model, benchmarks, sample_size, selection_mode = interactive_menu()
 
     # 2) load the dataset
     print("\n📂 Loading dataset...")
@@ -287,10 +294,12 @@ def main():
             threshold=threshold,
             sample_size=sample_size,
             benchmarks_used=benchmarks,
+            rag_engine=rag_engine,
+            name=eval_name,
         )
-        saved_files = sorted(EVAL_DIR.glob(f"{eval_data['name']}*.json"))
-        if saved_files:
-            print(f"💾 Results saved successfully in: {saved_files[-1]}")
+        saved_file = eval_data.get("filepath")
+        if saved_file and Path(saved_file).exists():
+            print(f"💾 Results saved successfully in: {saved_file}")
         else:
             print(f"💾 Results saved in folder: {EVAL_DIR}")
     except Exception as e:
