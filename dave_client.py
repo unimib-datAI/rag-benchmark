@@ -1,12 +1,22 @@
 import json
 import logging
 import os
+from pathlib import Path
 import re
+import sys
 import requests
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Forza UTF-8 per l'output su console Windows se necessario
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except (AttributeError, io.UnsupportedOperation):
+        pass
 
 logger = logging.getLogger("dave_client")
 
@@ -37,7 +47,7 @@ DEFAULT_SYSTEM_PROMPT = """You are an expert assistant that answers questions ba
   "The information provided is not sufficient to answer with certainty." and give an explanation about why you can't answer.
 Always assume that the user is asking you about information contained in the documents provided
 - Use a clear, precise, and domain-appropriate technical style.
-Make sure to ALWAYS answer in the same language used by the user to ask the question, don't ming the documents language
+Make sure to ALWAYS answer in the same language used by the user to ask the question, don't mind the documents language
 </instructions>
 
 </input>"""
@@ -46,17 +56,17 @@ STEP_RE = re.compile(r"\x02DAVE_STEP\x1E([\s\S]*?)\x03")
 CTX_RE = re.compile(r"\x02DAVE_CTX\x1E([\s\S]*?)\x03")
 
 # Limite caratteri per il contesto nel system prompt.
-# 500k chars Ôëê ~166k token, lascia margine per template + risposta sotto il limite 262k.
+# 500k chars ~166k token, lascia margine per template + risposta sotto il limite 262k.
 MAX_PROMPT_CONTEXT_CHARS = 500_000
 
 
-def _tronca_testo(testo, max_chars):
+def _tronca_testo(testo: str, max_chars: int) -> str:
     """Tronca il testo rispettando i confini di frase (. ! ?) o, in subordine,
-    i confini di parola. Non taglia mai a met├á parola."""
+    i confini di parola. Non taglia mai a metà parola."""
     if len(testo) <= max_chars:
         return testo
     candidato = testo[:max_chars]
-    # Non tornare indietro pi├╣ del 30% per cercare una fine di frase
+    # Non tornare indietro più del 30% per cercare una fine di frase
     soglia_min = int(max_chars * 0.7)
     pos = -1
     for terminatore in ['. ', '.\n', '? ', '?\n', '! ', '!\n']:
@@ -72,64 +82,75 @@ def _tronca_testo(testo, max_chars):
     # Ultima risorsa (testo senza spazi): tronca al limite
     return candidato.rstrip() + "\n[... troncato ...]"
 
+
 class TRPCError(RuntimeError):
     pass
 
+
 class DaveClient:
-    def __init__(self, username=None, password=None):
-        username = username or os.environ.get("DAVE_USERNAME")
-        password = password or os.environ.get("DAVE_PASSWORD")
-        if not username or not password:
-            raise RuntimeError("Credenziali DAVE mancanti. Impostale nel file .env (DAVE_USERNAME, DAVE_PASSWORD)")
-        self.username = username
-        self.password = password
+    """Client per interagire con l'istanza DAVE (Retrieval & Generation via tRPC / Next.js API)."""
+
+    def __init__(
+        self,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        base_url: Optional[str] = None,
+        base_path: Optional[str] = None,
+    ):
+        self.username = username or os.environ.get("DAVE_USERNAME")
+        self.password = password or os.environ.get("DAVE_PASSWORD")
+        self.base_url = base_url or os.environ.get("DAVE_BASE_URL", NEXTJS_BASE_URL)
+        self.base_path = base_path or os.environ.get("DAVE_BASE_PATH", NEXTJS_BASE_PATH)
+
+        if not self.username or not self.password:
+            raise RuntimeError(
+                "Credenziali DAVE mancanti. Impostale nel file .env (DAVE_USERNAME, DAVE_PASSWORD)"
+            )
         self.token = None
         self._login()
 
     def _login(self):
-        url = f"{NEXTJS_BASE_URL}{NEXTJS_BASE_PATH}/api/auth/keycloak-login"
-        resp = requests.post(url, json={"username": self.username, "password": self.password}, timeout=30)
+        url = f"{self.base_url}{self.base_path}/api/auth/keycloak-login"
+        resp = requests.post(
+            url,
+            json={"username": self.username, "password": self.password},
+            timeout=30,
+        )
         if not resp.ok:
-            raise RuntimeError(f"DAVE Login failed ({resp.status_code}): {resp.text}")
+            raise RuntimeError(f"DAVE Login fallito ({resp.status_code}): {resp.text}")
         self.token = resp.json()["access_token"]
 
     def _trpc_mutation(self, procedure: str, payload: Dict[str, Any]) -> Any:
-        url = f"{NEXTJS_BASE_URL}{NEXTJS_BASE_PATH}/api/trpc/{procedure}"
+        url = f"{self.base_url}{self.base_path}/api/trpc/{procedure}"
         if self.token:
             payload["token"] = self.token
         response = requests.post(url, json=payload, timeout=120)
         body = response.json()
         if "error" in body:
-            raise TRPCError(f"{procedure} failed: {body['error'].get('message')}")
+            raise TRPCError(f"{procedure} fallito: {body['error'].get('message')}")
         return body["result"]["data"]
 
     def _trpc_query(self, procedure: str, payload: Dict[str, Any]) -> Any:
-        url = f"{NEXTJS_BASE_URL}{NEXTJS_BASE_PATH}/api/trpc/{procedure}"
+        url = f"{self.base_url}{self.base_path}/api/trpc/{procedure}"
         if self.token:
             payload["token"] = self.token
         response = requests.get(url, params={"input": json.dumps(payload)}, timeout=60)
         body = response.json()
         if "error" in body:
-            raise TRPCError(f"{procedure} failed: {body['error'].get('message')}")
+            raise TRPCError(f"{procedure} fallito: {body['error'].get('message')}")
         return body["result"]["data"]
 
     # --- INGESTION APIs ---
 
     def create_collection(self, name: str) -> str:
+        """Crea una nuova collezione su DAVE e restituisce il suo UUID."""
         res = self._trpc_mutation("collection.create", {"name": name, "allowedUserIds": []})
         return res["id"]
 
-    def list_collections(self) -> List[Dict]:
-        return self._trpc_query("collection.list", {})
-
-    def get_collection_by_name(self, name: str) -> Optional[str]:
-        cols = self.list_collections()
-        for c in cols:
-            if c.get("name") == name:
-                return c.get("id")
-        return None
-
-    def create_txt_upload_job(self, collection_id: str, files_data: List[Dict[str, str]]) -> Dict[str, Any]:
+    def create_txt_upload_job(
+        self, collection_id: str, files_data: List[Dict[str, str]]
+    ) -> Dict[str, Any]:
+        """Avvia un job di caricamento asincrono per una lista di file TXT."""
         job = self._trpc_mutation(
             "document.createUploadJob",
             {
@@ -142,12 +163,15 @@ class DaveClient:
         return job
 
     def get_upload_job_status(self, job_id: str) -> Dict[str, Any]:
+        """Verifica lo stato di avanzamento di un job di caricamento."""
         return self._trpc_query("document.getUploadJob", {"jobId": job_id})
 
     # --- RETRIEVAL & GENERATION APIs ---
 
-    def retrieve_chunks(self, query: str, collection_id: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        # DAVE usually has a hardcoded k or relies on dense/full parameters. We just call it.
+    def retrieve_chunks(
+        self, query: str, collection_id: str, top_k: int = 5
+    ) -> List[Dict[str, Any]]:
+        """Esegue il retrieval su DAVE per la collezione indicata e restituisce i chunk più rilevanti."""
         return self._trpc_mutation(
             "search.mostSimilarDocuments",
             {
@@ -157,30 +181,41 @@ class DaveClient:
             },
         )
 
-    def build_system_prompt(self, docs: List[Dict[str, Any]], question: str, max_docs: int = 5) -> str:
+    def build_system_prompt(
+        self, docs: List[Dict[str, Any]], question: str, max_docs: int = 5
+    ) -> str:
+        """Costruisce il system prompt inserendo i frammenti dei documenti recuperati."""
         context_parts = []
         chunk_num = 0
         for i, doc in enumerate(docs[:max_docs]):
             lines = []
             for chunk in doc.get("chunks", []):
                 chunk_num += 1
-                lines.append(f"[{chunk_num}] {chunk['text']}")
+                lines.append(f"[{chunk_num}] {chunk.get('text', '')}")
             doc_content = f"Nome Documento {doc.get('title', 'Doc')} - Contenuto:\n" + "\n".join(lines)
-            context_parts.append(f'<document id="DOC_{i + 1}" name="{doc.get("title", "Doc")}">\n{doc_content}\n</document>')
+            context_parts.append(
+                f'<document id="DOC_{i + 1}" name="{doc.get("title", "Doc")}">\n{doc_content}\n</document>'
+            )
         context_str = "\n".join(context_parts)
 
-        # Tronca il contesto se supera il limite per evitare "prompt too long"
+        # Tronca il contesto se supera il limite per evitare errori di lunghezza prompt
         if len(context_str) > MAX_PROMPT_CONTEXT_CHARS:
             logger.warning(
-                "Contesto prompt troppo lungo (%d chars, limite %d). Troncamento ai confini di frase...",
-                len(context_str), MAX_PROMPT_CONTEXT_CHARS
+                "Contesto prompt troppo lungo (%d chars, limite %d). Troncamento...",
+                len(context_str),
+                MAX_PROMPT_CONTEXT_CHARS,
             )
             context_str = _tronca_testo(context_str, MAX_PROMPT_CONTEXT_CHARS)
 
-        return DEFAULT_SYSTEM_PROMPT.replace("{{CONTEXT}}", context_str).replace("{{QUESTION}}", question)
+        return DEFAULT_SYSTEM_PROMPT.replace("{{CONTEXT}}", context_str).replace(
+            "{{QUESTION}}", question
+        )
 
-    def generate_answer(self, system_prompt: str, question: str, collection_id: str = None) -> str:
-        payload = {
+    def generate_answer(
+        self, system_prompt: str, question: str, collection_id: Optional[str] = None
+    ) -> str:
+        """Chiama l'endpoint di generazione di DAVE in streaming e restituisce la risposta pulita."""
+        payload: Dict[str, Any] = {
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question},
@@ -191,7 +226,7 @@ class DaveClient:
         if collection_id:
             payload["collectionId"] = collection_id
 
-        url = f"{NEXTJS_BASE_URL}{NEXTJS_BASE_PATH}/api/generate"
+        url = f"{self.base_url}{self.base_path}/api/generate"
         raw = ""
         with requests.post(url, json=payload, stream=True, timeout=300) as response:
             response.raise_for_status()
@@ -199,7 +234,34 @@ class DaveClient:
                 if chunk:
                     raw += chunk
 
-        # Clean DAVE markers
+        # Pulizia dei marker interni di DAVE
         visible = STEP_RE.sub("", raw)
         visible = CTX_RE.sub("", visible)
         return visible.strip()
+
+
+def main():
+    """Test rapido di connettività e autenticazione con il server DAVE."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    print("=== DAVE Client - Test di Connessione ===")
+    try:
+        client = DaveClient()
+        print("[OK] Autenticazione con DAVE completata con successo!")
+        print(f"     Server base: {client.base_url}{client.base_path}")
+        print(f"     Utente: {client.username}")
+
+        col_file = Path(__file__).resolve().parent / ".dave_collections.json"
+        if col_file.exists():
+            with open(col_file, "r", encoding="utf-8") as f:
+                cols = json.load(f)
+            print(f"     Collezioni mappate in .dave_collections.json ({len(cols)}):")
+            for name, cid in cols.items():
+                print(f"       - {name}: {cid}")
+        else:
+            print("     [INFO] File .dave_collections.json non trovato.")
+    except Exception as e:
+        print(f"[ERRORE] Connessione a DAVE fallita: {e}")
+
+
+if __name__ == "__main__":
+    main()
