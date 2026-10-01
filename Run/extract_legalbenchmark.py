@@ -9,15 +9,15 @@ LEGALBENCH_DIR = os.path.normpath(
 BENCHMARKS_DIR = os.path.join(LEGALBENCH_DIR, "data", "benchmarks")
 CORPUS_DIR = os.path.join(LEGALBENCH_DIR, "data", "corpus")
 
-DEFAULT_OUTPUT = os.path.join(BASE_DIR, "Tutto_LEGALBENCH.json")
-MAX_EXAMPLES = 50
+DEFAULT_OUTPUT = os.path.join(BASE_DIR, "Tutto_LEGALBENCH.jsonl")
+MAX_EXAMPLES = None  # Nessun limite, usa tutte le domande disponibili
 SAMPLE_SEED = 42
 
 
 def _load_corpus_file(corpus_cache, corpus_dir, file_path):
 	if file_path not in corpus_cache:
 		full_path = os.path.join(corpus_dir, file_path)
-		with open(full_path, "r", encoding="utf-8-siggit branch -M main") as f:
+		with open(full_path, "r", encoding="utf-8-sig") as f:
 			corpus_cache[file_path] = f.read()
 	return corpus_cache[file_path]
 
@@ -156,7 +156,8 @@ def converti_legalbench(benchmarks_dir, corpus_dir, output_file, max_examples=MA
 		item["id"] = f"leg_{indice+1:04d}"
 
 	with open(output_file, "w", encoding="utf-8") as f:
-		json.dump(dati_unificati, f, indent=4, ensure_ascii=False)
+		for record in dati_unificati:
+			f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
 	print(
 		"Estratte "

@@ -34,12 +34,12 @@ RUN_DIR = ROOT_DIR / "Run"
 
 # benchmark names mapping -> json files in Run folder
 BENCHMARK_MAPPING = {
-    "LegalBench-RAG (Contract Precision)": "Tutto_LEGALBENCH.json",
-    "MultiHop-RAG (Multi-Document Synthesis)": "Tutto_MULTIHOP.json",
-    "CRAG (HTML Parsing & Traps)": "Tutto_CRAG_DAVE.json",
-    "MTRAG (Multi-Turn Conversations)": "Tutto_MTRAG_DAVE.json",
-    "OHRBench (OCR Noise / Scans)": "Tutto_OHRBench_DAVE.json",
-    "SQuAD-it (Italian Q&A on Wikipedia)": "Tutto_SQUAD.json"
+    "LegalBench-RAG (Contract Precision)": "Tutto_LEGALBENCH.jsonl",
+    "MultiHop-RAG (Multi-Document Synthesis)": "Tutto_MULTIHOP.jsonl",
+    "CRAG (HTML Parsing & Traps)": "Tutto_CRAG_DAVE.jsonl",
+    "MTRAG (Multi-Turn Conversations)": "Tutto_MTRAG_DAVE.jsonl",
+    "OHRBench (OCR Noise / Scans)": "Tutto_OHRBench_DAVE.jsonl",
+    "SQuAD-it (Italian Q&A on Wikipedia)": "Tutto_SQUAD.jsonl"
 }
 
 BENCHMARK_SHORT = {
@@ -51,19 +51,51 @@ BENCHMARK_SHORT = {
     "SQuAD-it": "SQuAD",
 }
 
-def invoke_ollama(prompt: str, ollama_url: str, model: str) -> str:
+def _load_benchmark_jsonl(path, skip_context=True):
+    """Load a JSONL benchmark file line-by-line, optionally skipping the context field to save memory."""
+    elements = []
+    with open(path, 'r', encoding='utf-8-sig') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            if skip_context:
+                record.pop('context', None)
+            elements.append(record)
+    return elements
+
+def invoke_ollama(prompt: str, ollama_url: str, model: str, llm_api_key: str = "") -> str:
     """Call Ollama via langchain_ollama and return the response as a string."""
     try:
-        base_url, client_kwargs = parse_llm_endpoint_or_key(ollama_url)
-        llm = ChatOllama(
-            model=model,
-            base_url=base_url,
-            temperature=0,
-            **({"client_kwargs": client_kwargs} if client_kwargs else {})
-        )
+        base_url, client_kwargs = parse_llm_endpoint_or_key(ollama_url, api_key=llm_api_key)
+        
+        # Determine if we should use ChatOpenAI or ChatOllama based on the URL or API Key
+        # If it's a known OpenAI endpoint or an API Key is provided, use ChatOpenAI
+        is_openai = "openai" in base_url.lower() or bool(llm_api_key)
+        if not is_openai and ("v1" in base_url or "azure" in base_url.lower()):
+            is_openai = True
+            
+        if is_openai:
+            from langchain_openai import ChatOpenAI
+            llm = ChatOpenAI(
+                model=model,
+                base_url=base_url if base_url and "localhost" not in base_url else None,
+                api_key=llm_api_key or "sk-no-key",
+                temperature=0,
+            )
+        else:
+            from langchain_ollama import ChatOllama
+            llm = ChatOllama(
+                model=model,
+                base_url=base_url,
+                temperature=0,
+                **({"client_kwargs": client_kwargs} if client_kwargs else {})
+            )
+            
         return llm.invoke(prompt).content
     except Exception as exc:
-        st.error(f"Ollama request failed: {exc}")
+        st.error(f"LLM request failed: {exc}")
         return ""
 
 # color based on score (green/yellow/red)
@@ -104,16 +136,26 @@ with st.sidebar:
     st.markdown('<hr class="sidebar-divider">', unsafe_allow_html=True)
 
     st.markdown("### LLM Judge")
-    st.markdown('<p class="sidebar-label">URL o chiave API LLM AS A JUDGE</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sidebar-label">Indirizzo LLM (Endpoint URL)</p>', unsafe_allow_html=True)
     ollama_url = st.text_input(
         "ollama_url",
         "http://localhost:11434",
-        placeholder="es. http://localhost:11434 oppure la tua chiave API",
+        placeholder="es. http://localhost:11434 o URL dell'università",
+        label_visibility="collapsed",
+    )
+
+    st.markdown('<p class="sidebar-label">API Key (Opzionale)</p>', unsafe_allow_html=True)
+    llm_api_key = st.text_input(
+        "llm_api_key",
+        "",
+        placeholder="es. sk-12345...",
+        type="password",
         label_visibility="collapsed",
     )
 
     st.markdown('<p class="sidebar-label">Model</p>', unsafe_allow_html=True)
-    ollama_model = st.selectbox("model_select", options=["gemma4:31b-cloud"], index=0, label_visibility="collapsed")
+    # Permette all'utente di inserire un modello personalizzato
+    ollama_model = st.text_input("model_select", value="gemma4:31b-cloud", placeholder="es. gemma4:31b-cloud o il modello dell'università", label_visibility="collapsed")
 
     st.markdown('<hr class="sidebar-divider">', unsafe_allow_html=True)
 
@@ -130,6 +172,13 @@ with st.sidebar:
 
     st.markdown('<p class="sidebar-label" style="margin-top: 1rem;">Queries per Benchmark</p>', unsafe_allow_html=True)
     sample_size_param = st.number_input("sample_size_param", min_value=1, value=3, step=1, label_visibility="collapsed")
+
+    st.markdown('<p class="sidebar-label" style="margin-top: 1rem;">Metriche RAGAS da Calcolare</p>', unsafe_allow_html=True)
+    all_metrics = ["faithfulness", "answer_relevancy", "context_precision", "answer_correctness", "context_recall"]
+    selected_metrics = st.multiselect("metrics_select", options=all_metrics, default=all_metrics, label_visibility="collapsed")
+    
+    st.markdown('<p class="sidebar-label" style="margin-top: 1rem;">Richieste in Parallelo (Velocità)</p>', unsafe_allow_html=True)
+    max_workers_param = st.slider("max_workers_param", min_value=1, max_value=10, value=2, step=1, label_visibility="collapsed")
 
     st.markdown('<p class="sidebar-label" style="margin-top: 1rem;">Selection Mode</p>', unsafe_allow_html=True)
     query_selection_mode = st.radio("query_selection_mode", options=["Random", "Fixed", "Repeat Previous"], horizontal=True, label_visibility="collapsed")
@@ -207,42 +256,41 @@ with tab_evaluation:
         for file_name in files_to_run:
             path = RUN_DIR / file_name
             if path.exists():
-                with open(path, 'r', encoding='utf-8-sig') as f:
-                    elements = json.load(f)
-                    
-                    if st.session_state.get("query_selection_mode") == "Repeat Previous":
-                        if previous_eval_ids:
-                            filtered_elements = [e for e in elements if e["id"] in previous_eval_ids]
-                            dataset_items.extend(filtered_elements)
-                        continue
+                skip_ctx = "OHRBench" not in file_name
+                elements = _load_benchmark_jsonl(path, skip_context=skip_ctx)
+                if st.session_state.get("query_selection_mode") == "Repeat Previous":
+                    if previous_eval_ids:
+                        filtered_elements = [e for e in elements if e["id"] in previous_eval_ids]
+                        dataset_items.extend(filtered_elements)
+                    continue
 
-                    # MTRAG special case: take only a certain number of multi-turn conversations, not single queries
-                    if "MTRAG" in file_name:
-                        conversations = defaultdict(list)
-                        for element in elements:
-                            conv_id = element['id'].split('_t')[0]
-                            conversations[conv_id].append(element)
+                # MTRAG special case: take only a certain number of multi-turn conversations, not single queries
+                if "MTRAG" in file_name:
+                    conversations = defaultdict(list)
+                    for element in elements:
+                        conv_id = element['id'].split('_t')[0]
+                        conversations[conv_id].append(element)
 
-                        turns_needed = st.session_state.get("sample_size_param", 3)
-                        conv_keys = list(conversations.keys())
-                        if st.session_state.get("query_selection_mode", "Random") == "Random":
-                            random.shuffle(conv_keys)
-                        else:
-                            conv_keys.sort()
-
-                        turns_added = 0
-                        for conv_key in conv_keys:
-                            if turns_added >= turns_needed: break
-                            for turn in sorted(conversations[conv_key], key=lambda x: x['id']):
-                                if turns_added < turns_needed:
-                                    dataset_items.append(turn)
-                                    turns_added += 1
+                    turns_needed = st.session_state.get("sample_size_param", 3)
+                    conv_keys = list(conversations.keys())
+                    if st.session_state.get("query_selection_mode", "Random") == "Random":
+                        random.shuffle(conv_keys)
                     else:
-                        size = min(st.session_state.get("sample_size_param", 3), len(elements))
-                        if st.session_state.get("query_selection_mode", "Random") == "Random":
-                            dataset_items.extend(random.sample(elements, size))
-                        else:
-                            dataset_items.extend(elements[:size])
+                        conv_keys.sort()
+
+                    turns_added = 0
+                    for conv_key in conv_keys:
+                        if turns_added >= turns_needed: break
+                        for turn in sorted(conversations[conv_key], key=lambda x: x['id']):
+                            if turns_added < turns_needed:
+                                dataset_items.append(turn)
+                                turns_added += 1
+                else:
+                    size = min(st.session_state.get("sample_size_param", 3), len(elements))
+                    if st.session_state.get("query_selection_mode", "Random") == "Random":
+                        dataset_items.extend(random.sample(elements, size))
+                    else:
+                        dataset_items.extend(elements[:size])
 
         tot = len(dataset_items)
 
@@ -259,6 +307,18 @@ with tab_evaluation:
             elif phase == "done":
                 progress_bar.progress(1.0)
 
+        # placeholder per le statistiche dei token
+        tps_placeholder = st.empty()
+        def _tps_callback(total, input_tok, output_tok, max_input, tps):
+            html = f'''
+            <div style="text-align: center; padding: 10px; background-color: rgba(255, 255, 255, 0.05); border-radius: 8px; margin-bottom: 10px; font-size: 0.9em;">
+                ⚡ <strong>Totale:</strong> {total} (In: {input_tok} | Out: {output_tok}) | 
+                <strong>Max Input/Req:</strong> {max_input} | 
+                <strong>Velocità:</strong> {tps:.1f} tok/s
+            </div>
+            '''
+            tps_placeholder.markdown(html, unsafe_allow_html=True)
+
         with st.spinner("LLM Ragas evaluation in progress... waiting for model response"):
             try:
                 ui_reports = run_evaluation(
@@ -267,9 +327,13 @@ with tab_evaluation:
                     threshold=threshold,
                     ollama_url=ollama_url,
                     ollama_model=ollama_model,
+                    llm_api_key=llm_api_key,
                     progress_callback=_streamlit_progress,
+                    tps_callback=_tps_callback,
                     motore_rag=motore_rag,
-                    benchmark_files=files_to_run
+                    benchmark_files=files_to_run,
+                    selected_metrics=selected_metrics,
+                    max_workers=max_workers_param
                 )
             # if there is an error, show the message and reset results
             except RuntimeError as e:
@@ -456,7 +520,7 @@ Write a clean, easy-to-read Markdown report with these sections:
 
 Keep the language clear, concise and directly actionable. Total length under 300 words."""
 
-                st.session_state.llm_advice = invoke_ollama(PROMPT_EXPERT, ollama_url, ollama_model)
+                st.session_state.llm_advice = invoke_ollama(PROMPT_EXPERT, ollama_url, ollama_model, llm_api_key)
 
         llm_advice_text = st.session_state.get("llm_advice", "")
 

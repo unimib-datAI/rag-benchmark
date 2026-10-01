@@ -5,7 +5,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_INPUT = os.path.normpath(
     os.path.join(BASE_DIR, "..", "Benchmarks", "MultiHop-RAG", "dataset", "MultiHopRAG.json")
 )
-DEFAULT_OUTPUT = os.path.join(BASE_DIR, "Superbenchmark_DAVE_temp.json")
+DEFAULT_OUTPUT = os.path.join(BASE_DIR, "Tutto_MULTIHOP.jsonl")
 
 
 def converti_multihop(input_file, output_file):
@@ -31,7 +31,8 @@ def converti_multihop(input_file, output_file):
         dati_unificati.append(record)
 
     with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(dati_unificati, f, indent=4, ensure_ascii=False)
+        for record in dati_unificati:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
     print(f"Estratte {len(dati_unificati)} query da MultiHop-RAG e salvate in {output_file}!")
 

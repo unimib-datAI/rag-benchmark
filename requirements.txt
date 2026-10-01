@@ -1,0 +1,15 @@
+streamlit
+pandas
+requests
+beautifulsoup4
+sentence-transformers
+ragas
+langchain-ollama
+langchain-huggingface
+datasets
+nest-asyncio
+plotly
+numpy
+tqdm
+python-dotenv
+langchain-openai

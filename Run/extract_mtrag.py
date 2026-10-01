@@ -1,5 +1,6 @@
 import json
 import os
+import re
 
 
 def _get_corpus_key(domain: str) -> str | None:
@@ -18,7 +19,14 @@ def _get_corpus_key(domain: str) -> str | None:
 def _parse_base_id(doc_id: str) -> str:
     if not doc_id:
         return ""
-    return doc_id.split("_", 1)[0]
+    if "_" not in doc_id:
+        return doc_id
+    base, tail = doc_id.split("_", 1)
+    # Solo i formati clapnq come "827849752_115-357" vanno splittati;
+    # gli ID cloud come "ibmcld_00001" restano interi.
+    if re.match(r'^\d+-\d+$', tail):
+        return base
+    return doc_id
 
 
 def _parse_segment_start(doc_id: str) -> int:
@@ -53,7 +61,7 @@ def _load_document_corpus(base_dir: str, corpus_key: str) -> dict[str, str]:
             if not line:
                 continue
             data = json.loads(line)
-            doc_id = data.get("_id") or data.get("id") or ""
+            doc_id = data.get("_id") or data.get("document_id") or data.get("id") or ""
             base_id = _parse_base_id(doc_id)
             if not base_id:
                 continue
@@ -115,12 +123,13 @@ def converti_mtrag(input_path, output_path):
                 turn_count += 1
 
     with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(dati_unificati, f, indent=4, ensure_ascii=False)
-    print(f"✅ MTRAG completato! Salvato in {output_path}.")
+        for record in dati_unificati:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+    print(f"MTRAG completato! Salvato in {output_path}.")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MTRAG_INPUT = os.path.normpath(os.path.join(BASE_DIR, "..", "Benchmarks", "mt-rag-benchmark", "mtrag-human","conversations", "conversations.json")) 
-MTRAG_OUTPUT = os.path.join(BASE_DIR, "Tutto_MTRAG_DAVE.json")
+MTRAG_OUTPUT = os.path.join(BASE_DIR, "Tutto_MTRAG_DAVE.jsonl")
 
 if os.path.exists(MTRAG_INPUT): 
     converti_mtrag(MTRAG_INPUT, MTRAG_OUTPUT)

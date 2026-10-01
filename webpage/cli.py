@@ -20,12 +20,12 @@ CONFIG_FILE = Path(__file__).resolve().parents[1] / "config.json"
 
 # map benchmark -> corresponding json file
 BENCHMARK_MAP = {
-    "LEGALBENCH": "Tutto_LEGALBENCH.json",
-    "MULTIHOP": "Tutto_MULTIHOP.json",
-    "CRAG": "Tutto_CRAG_DAVE.json",
-    "MTRAG": "Tutto_MTRAG_DAVE.json",
-    "OHRBENCH": "Tutto_OHRBench_DAVE.json",
-    "SQUAD": "Tutto_SQUAD.json",
+    "LEGALBENCH": "Tutto_LEGALBENCH.jsonl",
+    "MULTIHOP": "Tutto_MULTIHOP.jsonl",
+    "CRAG": "Tutto_CRAG_DAVE.jsonl",
+    "MTRAG": "Tutto_MTRAG_DAVE.jsonl",
+    "OHRBENCH": "Tutto_OHRBench_DAVE.jsonl",
+    "SQUAD": "Tutto_SQUAD.jsonl",
 }
 ALL_BENCHMARKS = list(BENCHMARK_MAP.keys())
 
@@ -89,7 +89,9 @@ def interactive_menu():
             except ValueError:
                 print("Please enter a valid decimal number.")
 
-        ollama_url = prompt_input("Enter URL or API Key for LLM Judge", def_ollama_url)
+        ollama_url = prompt_input("Enter URL for LLM Judge (e.g. http://localhost:11434)", def_ollama_url)
+        import getpass
+        llm_api_key = getpass.getpass("Enter API Key (Optional, will NOT be saved): ").strip()
         model = prompt_input("Enter LLM Judge model", def_model)
 
         print(f"\nAvailable benchmarks: {', '.join(ALL_BENCHMARKS)}")
@@ -128,7 +130,8 @@ def interactive_menu():
         print(f"RAG Base URL:       {endpoint}")
         print(f"RAG Engine:         {rag_engine}")
         print(f"Threshold:          {threshold}")
-        print(f"LLM Judge (URL/Key): {ollama_url}")
+        print(f"LLM Judge URL:      {ollama_url}")
+        print(f"API Key:            {'***SET***' if llm_api_key else 'None'}")
         print(f"LLM Model:          {model}")
         print(f"Benchmarks:      {', '.join(benchmarks)}")
         print(f"Queries/Bench:   {sample_size}")
@@ -145,9 +148,10 @@ def interactive_menu():
             config["benchmarks"] = benchmarks_str
             config["sample_size"] = str(sample_size)
             config["selection_mode"] = mode_str
+            # DO NOT save llm_api_key
             save_config(config)
 
-            return eval_name, endpoint, threshold, rag_engine, ollama_url, model, benchmarks, sample_size, selection_mode
+            return eval_name, endpoint, threshold, rag_engine, ollama_url, model, benchmarks, sample_size, selection_mode, llm_api_key
 
 
 # data loading and evaluation
@@ -163,8 +167,17 @@ def _load_dataset(benchmarks, sample_size, selection_mode):
             print(f"  ⚠  File not found: {path}  — benchmark {name} skipped.")
             continue
 
+        items = []
+        skip_ctx = name != "OHRBENCH"
         with open(path, 'r', encoding='utf-8-sig') as f:
-            items = json.load(f)
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+                if skip_ctx:
+                    record.pop('context', None)
+                items.append(record)
         if name == "MTRAG":
             conversations = defaultdict(list)
             for item in items:
@@ -247,7 +260,7 @@ def main():
     print(HEADER)
 
     # 1) interactive configuration
-    eval_name, endpoint, threshold, rag_engine, ollama_url, model, benchmarks, sample_size, selection_mode = interactive_menu()
+    eval_name, endpoint, threshold, rag_engine, ollama_url, model, benchmarks, sample_size, selection_mode, llm_api_key = interactive_menu()
 
     # 2) load the dataset
     print("\n📂 Loading dataset...")
@@ -268,6 +281,7 @@ def main():
             threshold,
             ollama_url,
             model,
+            llm_api_key=llm_api_key,
             progress_callback=_cli_progress,
             motore_rag=rag_engine
         )

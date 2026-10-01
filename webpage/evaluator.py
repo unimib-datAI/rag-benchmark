@@ -5,8 +5,87 @@ import logging
 import requests
 import nest_asyncio
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
+
+from langchain_core.callbacks.base import BaseCallbackHandler
+try:
+    import tiktoken
+except ImportError:
+    tiktoken = None
+
+class TPSCallbackHandler(BaseCallbackHandler):
+    def __init__(self, update_callback):
+        self.total_tokens = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.max_input_tokens = 0
+        self.start_time = time.time()
+        self.update_callback = update_callback
+        self.last_update = time.time()
+        self.encoder = tiktoken.get_encoding("cl100k_base") if tiktoken else None
+        
+        # Save main thread's Streamlit context
+        try:
+            from streamlit.runtime.scriptrunner.script_run_context import get_script_run_ctx
+            self.st_ctx = get_script_run_ctx()
+        except ImportError:
+            self.st_ctx = None
+        
+    def _count(self, text):
+        if not text: return 0
+        if self.encoder:
+            try:
+                return len(self.encoder.encode(text))
+            except Exception:
+                pass
+        return len(str(text)) // 4
+
+    def on_llm_start(self, serialized, prompts, **kwargs):
+        current_batch_input = 0
+        for p in prompts:
+            c = self._count(p)
+            current_batch_input += c
+            self.input_tokens += c
+            self.total_tokens += c
+        
+        if current_batch_input > self.max_input_tokens:
+            self.max_input_tokens = current_batch_input
+            
+        self._report()
+
+    def on_llm_end(self, response, **kwargs):
+        if response.generations:
+            for gen_list in response.generations:
+                for gen in gen_list:
+                    if hasattr(gen, 'text'):
+                        c = self._count(gen.text)
+                        self.output_tokens += c
+                        self.total_tokens += c
+        self._report()
+
+    def _report(self):
+        now = time.time()
+        if now - self.last_update > 0.5:
+            # Inject context into background thread if missing
+            if self.st_ctx:
+                try:
+                    import threading
+                    from streamlit.runtime.scriptrunner.script_run_context import get_script_run_ctx, add_script_run_ctx
+                    if not get_script_run_ctx():
+                        add_script_run_ctx(threading.current_thread(), self.st_ctx)
+                except Exception:
+                    pass
+            
+            elapsed = now - self.start_time
+            tps = self.total_tokens / elapsed if elapsed > 0 else 0
+            if self.update_callback:
+                try:
+                    self.update_callback(self.total_tokens, self.input_tokens, self.output_tokens, self.max_input_tokens, tps)
+                except Exception:
+                    pass
+            self.last_update = now
 
 from bs4 import BeautifulSoup
 
@@ -46,13 +125,19 @@ def clean_html_text(text):
     soup = BeautifulSoup(text, 'html.parser')
     return soup.get_text()
 
-def parse_llm_endpoint_or_key(endpoint_or_key: str, default_base_url: str = "http://localhost:11434") -> tuple[str, dict]:
+def parse_llm_endpoint_or_key(endpoint_or_key: str, default_base_url: str = "http://localhost:11434", api_key: str = "") -> tuple[str, dict]:
     """
     Parses an LLM Judge endpoint or API key input.
-    If a URL is provided (http://, https://, localhost, etc.), returns (base_url, client_kwargs).
-    If an API key is provided, returns (default_base_url, client_kwargs with Authorization Bearer header).
     """
     val = (endpoint_or_key or "").strip()
+    
+    # If API key is provided directly as an argument, use the URL as base_url
+    if api_key:
+        base_url = val if val else default_base_url
+        if base_url.endswith("/api"): base_url = base_url[:-4]
+        auth_header = api_key if api_key.lower().startswith("bearer ") else f"Bearer {api_key}"
+        return base_url, {"headers": {"Authorization": auth_header}}
+        
     if not val:
         return default_base_url, {}
     if val.startswith("http://") or val.startswith("https://"):
@@ -182,9 +267,16 @@ def ingest_corpus_to_rag(benchmark_files, run_dir, rag_base_url, progress_callba
             logger.warning("Benchmark file not found: %s", path)
             continue
 
-        # Load ALL elements from the benchmark JSON file
+        # Load ALL elements from the benchmark file (.jsonl or .json)
+        all_items = []
         with open(path, "r", encoding="utf-8-sig") as f:
-            all_items = json.load(f)
+            if str(path).endswith(".jsonl"):
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        all_items.append(json.loads(line))
+            else:
+                all_items = json.load(f)
 
         # Identify the source from the first element
         source = all_items[0].get("source", "default") if all_items else "default"
@@ -320,9 +412,9 @@ def process_single_query(item, motore_rag, dave_client, dave_collections, ask_en
         "user_input": sent_question, "response": rag_answer, "retrieved_contexts": doc_strings, "reference": gold
     }
 
-def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, progress_callback=None, motore_rag="Local RAG (BM25)", benchmark_files=None):
+def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, llm_api_key="", progress_callback=None, tps_callback=None, motore_rag="Local RAG (BM25)", benchmark_files=None, selected_metrics=None, max_workers=1):
     # --- Automatic ingestion: send the corpus to the RAG under test ---
-    if benchmark_files:
+    if benchmark_files and "DAVE" not in motore_rag:
         if progress_callback: progress_callback("ingest", 0, 1, "Loading corpus into the RAG system...")
         ingest_corpus_to_rag(benchmark_files, ROOT_DIR / "Run", rag_base_url, progress_callback)
 
@@ -355,21 +447,54 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, p
 
     if progress_callback: progress_callback("ragas", 0, 1, "Computing RAGAS metrics...")
 
-    base_url, client_kwargs = parse_llm_endpoint_or_key(ollama_url)
-    ragas_llm = ChatOllama(
-        model=ollama_model,
-        base_url=base_url,
-        temperature=0,
-        **({"client_kwargs": client_kwargs} if client_kwargs else {})
-    )
+    base_url, client_kwargs = parse_llm_endpoint_or_key(ollama_url, api_key=llm_api_key)
+    is_openai = "openai" in base_url.lower() or bool(llm_api_key)
+    if not is_openai and ("v1" in base_url or "azure" in base_url.lower()):
+        is_openai = True
+        
+    callbacks = [TPSCallbackHandler(tps_callback)] if tps_callback else []
+        
+    if is_openai:
+        from langchain_openai import ChatOpenAI
+        ragas_llm = ChatOpenAI(
+            model=ollama_model,
+            base_url=base_url if base_url and "localhost" not in base_url else None,
+            api_key=llm_api_key or "sk-no-key",
+            temperature=0,
+            callbacks=callbacks
+        )
+    else:
+        from langchain_ollama import ChatOllama
+        ragas_llm = ChatOllama(
+            model=ollama_model,
+            base_url=base_url,
+            temperature=0,
+            callbacks=callbacks,
+            **({"client_kwargs": client_kwargs} if client_kwargs else {})
+        )
+
     ragas_embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
+
+    # Ottimizzazioni: usiamo i worker scelti dall'utente
+    retries = 3 if is_openai else 2
+
+    # Metriche di default se non specificate
+    if not selected_metrics:
+        selected_metrics = ["faithfulness", "answer_relevancy", "context_precision", "answer_correctness", "context_recall"]
+        
+    metric_objects = []
+    if "faithfulness" in selected_metrics: metric_objects.append(faithfulness)
+    if "answer_relevancy" in selected_metrics: metric_objects.append(answer_relevancy)
+    if "context_precision" in selected_metrics: metric_objects.append(context_precision)
+    if "answer_correctness" in selected_metrics: metric_objects.append(answer_correctness)
+    if "context_recall" in selected_metrics: metric_objects.append(context_recall)
 
     try:
         df_ragas = evaluate(
             dataset=Dataset.from_dict(ragas_samples),
-            metrics=[faithfulness, answer_relevancy, context_precision, answer_correctness, context_recall],
+            metrics=metric_objects,
             llm=ragas_llm, embeddings=ragas_embeddings,
-            run_config=RunConfig(max_workers=1, max_retries=2, timeout=120),
+            run_config=RunConfig(max_workers=max_workers, max_retries=retries, timeout=120),
             raise_exceptions=False
         ).to_pandas()
 

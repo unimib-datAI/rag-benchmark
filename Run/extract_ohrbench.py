@@ -45,16 +45,17 @@ def converti_ohrbench(input_path, output_path):
         if record["question"] and record["context"]:
             dati_unificati.append(record)
 
-    with open(output_path, 'w', encoding='utf-8-sig') as f:
-        json.dump(dati_unificati, f, indent=4, ensure_ascii=False)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        for record in dati_unificati:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
         
-    print(f"✅ OHRBench completato! Estratte {len(dati_unificati)} query e salvate in {output_path}.")
+    print(f"OHRBench completato! Estratte {len(dati_unificati)} query e salvate in {output_path}.")
 
 # --- ESECUZIONE ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 OHR_INPUT = os.path.normpath(os.path.join(BASE_DIR, "..", "Benchmarks", "OHR-Bench", "data", "qas.json")) 
-OHR_OUTPUT = os.path.join(BASE_DIR, "Tutto_OHRBench_DAVE.json")
+OHR_OUTPUT = os.path.join(BASE_DIR, "Tutto_OHRBench_DAVE.jsonl")
 
 if os.path.exists(OHR_INPUT): 
     converti_ohrbench(OHR_INPUT, OHR_OUTPUT)

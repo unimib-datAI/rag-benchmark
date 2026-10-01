@@ -19,7 +19,7 @@ def upload_docs_in_batches(client: DaveClient, collection_id: str, docs: list, b
         doc_cache[benchmark_name] = []
         
     already_uploaded = set(doc_cache[benchmark_name])
-    new_docs = [d for d in docs if d["fileName"] not in already_uploaded]
+    new_docs = [d for d in docs if d["fileName"] not in already_uploaded and d.get("content", "").strip()]
     
     if not new_docs:
         print(f"[{benchmark_name}] Tutti i documenti ({len(docs)}) sono già presenti in cache. Salto l'upload.")
@@ -27,36 +27,65 @@ def upload_docs_in_batches(client: DaveClient, collection_id: str, docs: list, b
         
     print(f"[{benchmark_name}] {len(docs) - len(new_docs)} doc già caricati. Inizio upload dei {len(new_docs)} nuovi doc...")
 
-    BATCH_SIZE = 50
-    batches = list(range(0, len(new_docs), BATCH_SIZE))
-    for i in tqdm(batches, desc=f"[{benchmark_name}] Uploading", unit="batch"):
-        batch = new_docs[i:i+BATCH_SIZE]
-        try:
-            job = client.create_txt_upload_job(collection_id, batch)
-            job_id = job["jobId"]
-            doc_cache[benchmark_name].extend([d["fileName"] for d in batch])
-            with open(DOC_CACHE_DB, "w") as f:
-                json.dump(doc_cache, f)
-            time.sleep(2)
-        except Exception as e:
-            tqdm.write(f"[{benchmark_name}] Errore sottomissione Batch {i//BATCH_SIZE + 1}: {e}. Procedo col prossimo.")
-            time.sleep(2)
+    # Tronca documenti troppo grandi (>500KB) - il server non li regge
+    MAX_DOC_CHARS = 500_000
+    truncated = 0
+    for doc in new_docs:
+        if len(doc.get("content", "")) > MAX_DOC_CHARS:
+            doc["content"] = doc["content"][:MAX_DOC_CHARS] + "\n[... troncato ...]"
+            truncated += 1
+    if truncated:
+        print(f"[{benchmark_name}] Troncati {truncated} documenti troppo grandi (>{MAX_DOC_CHARS//1000}KB).")
+
+    # Batch conservativo: max 1MB payload o 20 docs
+    MAX_BATCH_BYTES = 1 * 1024 * 1024  # 1 MB
+    MAX_BATCH_DOCS = 20
+    MAX_RETRIES = 3
+    SLEEP_BETWEEN = 5  # secondi tra batch
+    
+    batches = []
+    current_batch = []
+    current_size = 0
+    for doc in new_docs:
+        doc_size = len(doc.get("content", "").encode("utf-8"))
+        if current_batch and (current_size + doc_size > MAX_BATCH_BYTES or len(current_batch) >= MAX_BATCH_DOCS):
+            batches.append(current_batch)
+            current_batch = []
+            current_size = 0
+        current_batch.append(doc)
+        current_size += doc_size
+    if current_batch:
+        batches.append(current_batch)
+
+    for batch_idx in tqdm(range(len(batches)), desc=f"[{benchmark_name}] Uploading", unit="batch"):
+        batch = batches[batch_idx]
+        job_id = None
+        
+        # Retry con backoff esponenziale
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                job = client.create_txt_upload_job(collection_id, batch)
+                job_id = job["jobId"]
+                break
+            except Exception as e:
+                if attempt < MAX_RETRIES:
+                    wait = 10 * (2 ** (attempt - 1))
+                    tqdm.write(f"[{benchmark_name}] Batch {batch_idx+1} tentativo {attempt}/{MAX_RETRIES} fallito: {e}. Riprovo tra {wait}s...")
+                    time.sleep(wait)
+                else:
+                    tqdm.write(f"[{benchmark_name}] Batch {batch_idx+1} fallito dopo {MAX_RETRIES} tentativi: {e}. Salto.")
+                    job_id = None
+        
+        if not job_id:
             continue
         
-        # Aspetta che finisca (timeout di sicurezza per evitare blocchi infiniti del server)
-        max_wait = 120
-        start_time = time.time()
-        while True:
-            try:
-                status = client.get_upload_job_status(job_id)
-                if status["status"] in ("completed", "completed_with_errors", "failed", "cancelled"):
-                    break
-                if time.time() - start_time > max_wait:
-                    tqdm.write(f"[{benchmark_name}] Timeout di {max_wait}s superato per Job {job_id} (Server bloccato). Salto al prossimo.")
-                    break
-            except Exception as e:
-                tqdm.write(f"[{benchmark_name}] Errore recupero stato Job {job_id}: {e}. Riprovo...")
-            time.sleep(2)
+        # Fire-and-forget: assumiamo che se il job è stato creato (job_id presente),
+        # il server lo processerà in modo asincrono. Aggiorniamo subito la cache.
+        doc_cache[benchmark_name].extend([d["fileName"] for d in batch])
+        with open(DOC_CACHE_DB, "w") as f:
+            json.dump(doc_cache, f)
+        
+        time.sleep(SLEEP_BETWEEN)
 
 def ingest_file(client: DaveClient, filepath: str, benchmark_name: str):
     print(f"[{benchmark_name}] Ingesting {filepath}...")
@@ -102,7 +131,7 @@ def ingest_file(client: DaveClient, filepath: str, benchmark_name: str):
             for line in f:
                 data = json.loads(line)
                 text = data.get("text", "")
-                doc_id = data.get("_id") or data.get("id") or f"doc_{len(docs)}"
+                doc_id = data.get("_id") or data.get("document_id") or data.get("id") or f"doc_{len(docs)}"
                 if text:
                     docs.append({"fileName": f"{doc_id}.txt", "content": text})
 
@@ -168,15 +197,24 @@ def main():
         print(f"File non trovato: {multihop_path}")
 
     # Ingest CRAG
-    crag_path = BASE_DIR / "Run" / "Tutto_CRAG_DAVE.json"
+    crag_path = BASE_DIR / "Run" / "Tutto_CRAG_DAVE.jsonl"
+    if not crag_path.exists():
+        crag_path = BASE_DIR / "Run" / "Tutto_CRAG_DAVE.json"
     if crag_path.exists():
         try:
-            with open(crag_path, "r", encoding="utf-8-sig") as f:
-                dati = json.load(f)
-            
+            def _iter_crag(p):
+                with open(p, "r", encoding="utf-8-sig") as f:
+                    if str(p).endswith(".jsonl"):
+                        for line in f:
+                            if line.strip():
+                                yield json.loads(line)
+                    else:
+                        for item in json.load(f):
+                            yield item
+
             docs = []
             doc_ids_visti = set()
-            for item in dati:
+            for item in _iter_crag(crag_path):
                 contesto_grezzo = item.get("context", "")
                 lines = [line.strip() for line in contesto_grezzo.splitlines() if line.strip()]
                 
@@ -236,13 +274,23 @@ def main():
         print(f"File non trovato: {squad_path}")
 
     # Ingest OHRBench
-    ohrbench_path = BASE_DIR / "Run" / "Tutto_OHRBench_DAVE.json"
+    ohrbench_path = BASE_DIR / "Run" / "Tutto_OHRBench_DAVE.jsonl"
+    if not ohrbench_path.exists():
+        ohrbench_path = BASE_DIR / "Run" / "Tutto_OHRBench_DAVE.json"
     if ohrbench_path.exists():
         try:
-            with open(ohrbench_path, "r", encoding="utf-8-sig") as f:
-                dati = json.load(f)
+            def _iter_ohr(p):
+                with open(p, "r", encoding="utf-8-sig") as f:
+                    if str(p).endswith(".jsonl"):
+                        for line in f:
+                            if line.strip():
+                                yield json.loads(line)
+                    else:
+                        for item in json.load(f):
+                            yield item
+
             docs = []
-            for item in dati:
+            for item in _iter_ohr(ohrbench_path):
                 contesto = item.get("context", "")
                 doc_id = item.get("id", "doc_0")
                 if contesto.strip():

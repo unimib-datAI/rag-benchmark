@@ -5,7 +5,7 @@ from pathlib import Path
 # Percorsi dei file
 BASE_DIR = Path(__file__).resolve().parent.parent
 SQUAD_JSON_PATH = BASE_DIR / "Benchmarks" / "squad-it" / "SQuAD_it-test.json" / "SQuAD_it-test.json"
-OUTPUT_BENCHMARK_PATH = BASE_DIR / "Run" / "Tutto_SQUAD.json"
+OUTPUT_BENCHMARK_PATH = BASE_DIR / "Run" / "Tutto_SQUAD.jsonl"
 OUTPUT_CORPUS_PATH = BASE_DIR / "Run" / "squad_corpus.json"
 
 
@@ -65,7 +65,8 @@ def main():
 
     # Salvataggio Benchmark
     with open(OUTPUT_BENCHMARK_PATH, "w", encoding="utf-8") as f:
-        json.dump(benchmark_data, f, ensure_ascii=False, indent=2)
+        for record in benchmark_data:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
     # Salvataggio Corpus
     with open(OUTPUT_CORPUS_PATH, "w", encoding="utf-8") as f:
