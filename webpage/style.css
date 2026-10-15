@@ -348,15 +348,45 @@ button[kind="primary"]:active {
     box-shadow: 0 2px 10px rgba(108, 92, 231, 0.4) !important;
 }
 /* ==========================================================================
-   NASCONDI HEADER STREAMLIT (Omino, Deploy, Menu)
+   NASCONDI ELEMENTI HEADER STREAMLIT (Deploy, Menu, Azioni)
    ========================================================================== */
 
 [data-testid="stHeader"] {
+    background: transparent !important;
+    color: inherit !important;
+}
+
+[data-testid="stToolbar"] {
+    background: transparent !important;
+}
+
+/* Nasconde solo gli elementi a destra: tasto Deploy, menu a tre puntini e pulsanti azioni */
+[data-testid="stToolbarActions"],
+[data-testid="stToolbarActionButton"],
+[data-testid="stAppDeployButton"],
+#MainMenu {
     display: none !important;
 }
 
 [data-testid="stStatusWidget"] {
     visibility: hidden !important;
+}
+
+/* Assicura che il pulsante per riaprire la sidebar rimanga visibile in alto a sinistra */
+[data-testid="stExpandSidebarButton"],
+[data-testid="collapsedControl"] {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    z-index: 999999 !important;
+}
+
+[data-testid="stExpandSidebarButton"] button,
+[data-testid="collapsedControl"] button {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    color: #e0e0e0 !important;
 }
 
 /* ==========================================================================
