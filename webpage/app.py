@@ -10,10 +10,13 @@ from pathlib import Path
 
 from langchain_ollama import ChatOllama
 
-from evaluator import run_evaluation, parse_llm_endpoint_or_key
+from evaluator import run_evaluation, parse_llm_endpoint_or_key, classify_query_verdict
 from persistence import save_evaluation, list_evaluations, load_evaluation, delete_evaluation
 
+import importlib
 import dashboard as dash
+importlib.reload(dash)
+from dashboard import get_pattern_legend_html
 
 st.set_page_config(
     page_title="SuperBenchmark · RAG Evaluation",
@@ -223,7 +226,12 @@ if not st.session_state.running and not st.session_state.results:
     if saved_evals:
         last_eval = saved_evals[0]
         complete_evals = load_evaluation(last_eval["filepath"])
-        st.session_state.results = complete_evals.get("results", [])
+        loaded_results = complete_evals.get("results", [])
+        # retroactive classification for old evaluations without verdict
+        for rep in loaded_results:
+            if 'verdict' not in rep and 'correctness_voto' in rep:
+                rep.update(classify_query_verdict(rep))
+        st.session_state.results = loaded_results
         st.session_state.current_eval_name = complete_evals.get("name", "")
 
 # main tabs
@@ -393,7 +401,9 @@ with tab_evaluation:
                 msg_parts.append(f"**{truncated_contexts}** truncated contexts (exceeded model limit)")
             if failed_queries > 0:
                 msg_parts.append(f"**{failed_queries}/{len(reports)}** queries with failed RAGAS metrics (set to 0.0)")
+            st.markdown('<div style="margin-top: 1.5rem; margin-bottom: 1rem;">', unsafe_allow_html=True)
             st.warning("⚠️ " + " · ".join(msg_parts) + ". The averages might not reflect all queries.")
+            st.markdown('</div>', unsafe_allow_html=True)
 
         # if there are multiple benchmarks, show breakdown
         sources = df['source'].unique()
@@ -406,29 +416,77 @@ with tab_evaluation:
                 with cols[i]:
                     st.markdown(dash.get_breakdown_card_html(_short_source(src), sc, len(src_df), _value_color(sc)), unsafe_allow_html=True)
 
+        # verdict distribution summary
+        pattern_counts = defaultdict(int)
+        for rep in reports:
+            pattern_counts[rep.get('error_pattern', 'UNKNOWN')] += 1
+        st.markdown(dash.get_verdict_summary_html(dict(pattern_counts), len(reports)), unsafe_allow_html=True)
+        
+        with st.expander("📖 Mostra Legenda & Significato dei Pattern di Errore"):
+            st.markdown(get_pattern_legend_html(), unsafe_allow_html=True)
+
         # results table
         st.markdown('<div class="section-title">Results</div>', unsafe_allow_html=True)
-        display_df = df[['query_id', 'source', 'retrieval_voto', 'recall_voto', 'faithfulness_voto', 'correctness_voto', 'relevancy_voto']].copy() if 'recall_voto' in df.columns else df[['query_id', 'source', 'retrieval_voto', 'faithfulness_voto', 'correctness_voto', 'relevancy_voto']].copy()
+        cols_needed = ['query_id', 'source', 'verdict_label', 'error_pattern_label', 'retrieval_voto']
         if 'recall_voto' in df.columns:
-            display_df.columns = ['Query', 'Benchmark', 'C. Precision', 'C. Recall', 'Faithfulness', 'Correctness', 'Relevancy']
-            st.dataframe(
-                display_df.style.format({'C. Precision': '{:.2f}', 'C. Recall': '{:.2f}', 'Faithfulness': '{:.2f}', 'Correctness': '{:.2f}', 'Relevancy': '{:.2f}'})
-                .background_gradient(subset=['C. Precision', 'C. Recall', 'Faithfulness', 'Correctness', 'Relevancy'], cmap='RdYlGn', vmin=0, vmax=1),
-                width='stretch', hide_index=True,
-            )
-        else:
-            display_df.columns = ['Query', 'Benchmark', 'C. Precision', 'Faithfulness', 'Correctness', 'Relevancy']
-            st.dataframe(
-                display_df.style.format({'C. Precision': '{:.2f}', 'Faithfulness': '{:.2f}', 'Correctness': '{:.2f}', 'Relevancy': '{:.2f}'})
-                .background_gradient(subset=['C. Precision', 'Faithfulness', 'Correctness', 'Relevancy'], cmap='RdYlGn', vmin=0, vmax=1),
-                width='stretch', hide_index=True,
-            )
+            cols_needed.append('recall_voto')
+        cols_needed.extend(['faithfulness_voto', 'correctness_voto', 'relevancy_voto'])
+        
+        # Ensure fallback for legacy records
+        for col in ['verdict_label', 'error_pattern_label']:
+            if col not in df.columns:
+                df[col] = ''
+
+        display_df = df[[c for c in cols_needed if c in df.columns]].copy()
+        
+        column_rename = {
+            'query_id': 'Query',
+            'source': 'Benchmark',
+            'verdict_label': 'Verdict',
+            'error_pattern_label': 'Pattern',
+            'retrieval_voto': 'C. Precision',
+            'recall_voto': 'C. Recall',
+            'faithfulness_voto': 'Faithfulness',
+            'correctness_voto': 'Correctness',
+            'relevancy_voto': 'Relevancy'
+        }
+        display_df = display_df.rename(columns=column_rename)
+        
+        numeric_cols = [c for c in ['C. Precision', 'C. Recall', 'Faithfulness', 'Correctness', 'Relevancy'] if c in display_df.columns]
+        st.dataframe(
+            display_df.style.format({c: '{:.2f}' for c in numeric_cols})
+            .background_gradient(subset=numeric_cols, cmap='RdYlGn', vmin=0, vmax=1),
+            width='stretch', hide_index=True,
+        )
 
         # single query details with expander
         st.markdown('<div class="section-title">Query Details</div>', unsafe_allow_html=True)
-        for rep in reports:
+        
+        # Filter controls for Query Details
+        all_verdicts = sorted(list({r.get('verdict_label', '') for r in reports if r.get('verdict_label')}))
+        all_patterns = sorted(list({r.get('error_pattern_label', '') for r in reports if r.get('error_pattern_label')}))
+        
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            filter_verdict = st.multiselect("Filtra per Verdetto", options=all_verdicts, default=[], placeholder="Tutti i verdetti")
+        with col_f2:
+            filter_pattern = st.multiselect("Filtra per Pattern di Errore", options=all_patterns, default=[], placeholder="Tutti i pattern")
+            
+        filtered_reports = reports
+        if filter_verdict:
+            filtered_reports = [r for r in filtered_reports if r.get('verdict_label') in filter_verdict]
+        if filter_pattern:
+            filtered_reports = [r for r in filtered_reports if r.get('error_pattern_label') in filter_pattern]
+
+        if not filtered_reports:
+            st.info("Nessuna query corrisponde ai filtri selezionati.")
+            
+        for rep in filtered_reports:
             corr = rep.get('correctness_voto', 0)
-            label = f"{rep['query_id']}  |  {rep['source']}  |  Correctness: {corr:.2f}"
+            v_label = rep.get('verdict_label', '')
+            pattern = rep.get('error_pattern_label', '')
+            pattern_suffix = f"  |  {pattern}" if rep.get('verdict') == 'wrong' else ""
+            label = f"{rep['query_id']}  |  {rep['source']}  |  {v_label}{pattern_suffix}  |  Correctness: {corr:.2f}"
             with st.expander(label):
                 st.markdown("**Question**")
                 st.code(rep['domanda'], language=None)
@@ -450,6 +508,14 @@ with tab_evaluation:
                     reason = ""  # ragas returns only scores, not reasons unfortunately
                     with col:
                         st.markdown(dash.get_judge_box_html(metric_label, v, reason, _value_color(v)), unsafe_allow_html=True)
+
+                # verdict card with error pattern classification
+                st.markdown(dash.get_verdict_html(
+                    rep.get('verdict', 'wrong'),
+                    rep.get('verdict_label', '❌ Wrong'),
+                    rep.get('error_pattern_label', 'Unknown'),
+                    rep.get('error_reason', ''),
+                ), unsafe_allow_html=True)
 
                 with st.expander("Retrieved Documents"):
                     st.text(rep['docs'])
@@ -478,6 +544,11 @@ with tab_evaluation:
                         f"({len(src_df)} queries)\n"
                     )
 
+                # build error patterns summary
+                err_pattern_summary = ""
+                for p_id, p_count in sorted(pattern_counts.items(), key=lambda x: -x[1]):
+                    err_pattern_summary += f"  - {p_id}: {p_count} queries\n"
+
                 PROMPT_EXPERT = f"""You are a Senior RAG System Architect. Provide a clear, clean and concise evaluation report.
 
 EVALUATION METRICS (averaged over {len(reports)} queries):
@@ -486,6 +557,8 @@ EVALUATION METRICS (averaged over {len(reports)} queries):
 - Context Precision: {avg_r:.2f}
 - Context Recall: {avg_recall:.2f}
 
+ERROR PATTERNS DETECTED:
+{err_pattern_summary}
 PER-BENCHMARK BREAKDOWN:
 {benchmark_summary}
 
@@ -592,7 +665,11 @@ with tab_explore:
             with col_load:
                 if st.button("📂 Open", key=f"explore_load_{idx}", width='stretch'):
                     full_eval = load_evaluation(ev["filepath"])
-                    st.session_state.results = full_eval.get("results", [])
+                    loaded_results = full_eval.get("results", [])
+                    for rep in loaded_results:
+                        if 'verdict' not in rep and 'correctness_voto' in rep:
+                            rep.update(classify_query_verdict(rep))
+                    st.session_state.results = loaded_results
                     st.session_state.current_eval_name = full_eval.get("name", "")
                     st.session_state.explore_msg = f"✅ Data for '{ev['name']}' loaded! Switch to the '🔬 Evaluation' tab above to view it."
                     st.rerun()
@@ -633,6 +710,8 @@ with tab_explore:
             query_meta: dict[str, dict] = {}
             for ev in selected_for_compare:
                 for res in loaded_evals[ev["name"]].get("results", []):
+                    if 'verdict' not in res and 'correctness_voto' in res:
+                        res.update(classify_query_verdict(res))
                     qid = res.get("query_id", "")
                     if qid not in query_results_map:
                         query_results_map[qid] = {}
@@ -653,6 +732,7 @@ with tab_explore:
                     res = query_results_map[qid].get(ev["name"])
                     corr = res.get("correctness_voto") if res else None
                     faith = res.get("faithfulness_voto") if res else None
+                    pattern = res.get("error_pattern_label") if res else None
                     try:
                         row[f"Corr ({ev['name']})"] = round(float(corr), 2) if corr is not None else None
                     except (ValueError, TypeError):
@@ -661,6 +741,7 @@ with tab_explore:
                         row[f"Faith ({ev['name']})"] = round(float(faith), 2) if faith is not None else None
                     except (ValueError, TypeError):
                         row[f"Faith ({ev['name']})"] = None
+                    row[f"Pattern ({ev['name']})"] = pattern or "—"
                 cmp_table_rows.append(row)
             if cmp_table_rows:
                 cmp_df = pd.DataFrame(cmp_table_rows)
@@ -731,6 +812,14 @@ with tab_explore:
                                     metrics_html += f'<span style="background:rgba(255,255,255,0.05);border-radius:8px;padding:4px 8px;font-size:0.75rem;">{m_label}: <strong style="color:{m_color}">{m_val_f:.2f}</strong></span>'
                                 metrics_html += '</div>'
                                 st.markdown(metrics_html, unsafe_allow_html=True)
+
+                                # Verdict card in deep compare
+                                st.markdown(dash.get_verdict_html(
+                                    res.get('verdict', 'wrong'),
+                                    res.get('verdict_label', '❌ Wrong'),
+                                    res.get('error_pattern_label', 'Unknown'),
+                                    res.get('error_reason', ''),
+                                ), unsafe_allow_html=True)
 
                                 st.markdown("**RAG Answer**")
                                 st.info(res.get("risposta_rag", "N/A"))

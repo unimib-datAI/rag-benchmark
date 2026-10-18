@@ -523,3 +523,208 @@ button[kind="primary"]:active {
 .expert-report-card strong {
     color: #ffffff;
 }
+
+/* ==========================================================================
+   VERDICT CARD (Per-Query Evaluation)
+   ========================================================================== */
+
+.verdict-card {
+    border-radius: 10px;
+    padding: 1.2rem 1.4rem;
+    margin-top: 1rem;
+    margin-bottom: 0.5rem;
+    transition: all 0.25s ease;
+}
+
+.verdict-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+.verdict-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.7rem;
+}
+
+.verdict-title {
+    color: #a2a2c0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.verdict-badge {
+    font-weight: 700;
+    font-size: 0.95rem;
+    padding: 0.25rem 0.8rem;
+    border: 1px solid;
+    border-radius: 20px;
+    font-family: 'Inter', sans-serif;
+}
+
+.verdict-reason {
+    color: #cfcfd6;
+    font-size: 0.92rem;
+    line-height: 1.55;
+}
+
+/* ==========================================================================
+   VERDICT SUMMARY BAR (Overview distribution)
+   ========================================================================== */
+
+.verdict-summary {
+    background: rgba(30, 30, 40, 0.6);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    padding: 1.4rem 1.6rem;
+    margin-top: 1.8rem;
+    margin-bottom: 2rem;
+}
+
+.warning-banner-container {
+    margin-top: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.vs-header {
+    color: #a2a2c0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 0.8rem;
+}
+
+.vs-bar {
+    display: flex;
+    height: 10px;
+    border-radius: 5px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.05);
+    margin-bottom: 0.7rem;
+}
+
+.vs-seg {
+    min-width: 2px;
+    transition: width 0.4s ease;
+}
+
+.vs-correct { background: #00E676; }
+.vs-partial { background: #FFC400; }
+.vs-wrong   { background: #FF1744; }
+
+.vs-labels {
+    display: flex;
+    gap: 1.5rem;
+    margin-bottom: 0.7rem;
+}
+
+.vs-label {
+    color: #8b8b9e;
+    font-size: 0.82rem;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.vs-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.vs-patterns {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding-top: 0.6rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.vs-patterns-title {
+    color: #8b8b9e;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-right: 4px;
+}
+
+.vp-tag {
+    font-size: 0.75rem;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-weight: 600;
+}
+
+.vp-tag-red {
+    background: rgba(255, 23, 68, 0.1);
+    border: 1px solid rgba(255, 23, 68, 0.3);
+    color: #FF1744;
+}
+
+.vp-tag-yellow {
+    background: rgba(255, 196, 0, 0.1);
+    border: 1px solid rgba(255, 196, 0, 0.3);
+    color: #FFC400;
+}
+
+.vp-tag-green {
+    background: rgba(0, 230, 118, 0.1);
+    border: 1px solid rgba(0, 230, 118, 0.3);
+    color: #00E676;
+}
+
+/* ── Legenda Error Patterns ── */
+.vs-legend-details {
+    margin-top: 1rem;
+    padding-top: 0.8rem;
+    border-top: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+.vs-legend-toggle {
+    color: #a29bfe;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.2s ease;
+}
+
+.vs-legend-toggle:hover {
+    color: #6c5ce7;
+}
+
+.vs-legend-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 0.8rem;
+    margin-top: 0.9rem;
+}
+
+.vs-legend-item {
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    border-radius: 8px;
+    padding: 0.7rem 0.9rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.vs-legend-desc {
+    color: #cbd5e1;
+    font-size: 0.82rem;
+    line-height: 1.4;
+}
+
+.vs-legend-desc strong {
+    color: #f1f5f9;
+}

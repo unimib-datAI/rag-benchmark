@@ -359,6 +359,162 @@ def query_local_rag(endpoint, question, actual_top_k, source, context_docs, sear
     except Exception as e:
         return f"Exception: {e}", []
 
+# ERROR PATTERN CLASSIFICATION
+
+_REFUSAL_PATTERNS = [
+    "non posso", "non ho informazioni", "non sono in grado",
+    "non ho abbastanza", "non è possibile determinare",
+    "non è sufficiente", "non dispongo",
+    "i cannot", "i don't have", "i'm unable", "insufficient information",
+    "not enough information", "cannot determine", "unable to answer",
+    "no information", "not sufficient", "information provided is not sufficient",
+]
+
+def classify_query_verdict(report: dict) -> dict:
+    """Classify a single query result with a verdict and error pattern.
+
+    Uses only the RAGAS metrics already computed — no additional LLM calls.
+
+    Returns a dict with:
+      - verdict: 'correct' | 'partial' | 'wrong'
+      - verdict_label: human-readable label with emoji
+      - error_pattern: pattern ID (e.g. 'RET_FAIL')
+      - error_pattern_label: human-readable pattern name
+      - error_reason: explanation string
+    """
+    corr  = float(report.get('correctness_voto', 0) or 0)
+    faith = float(report.get('faithfulness_voto', 0) or 0)
+    prec  = float(report.get('retrieval_voto', 0) or 0)
+    recall = float(report.get('recall_voto', 0) or 0)
+    answer = str(report.get('risposta_rag', '')).lower()
+
+    # Check for refusal first (keyword-based)
+    is_refusal = any(p in answer for p in _REFUSAL_PATTERNS)
+
+    # ── CORRECT ──
+    if corr >= 0.7:
+        return {
+            'verdict': 'correct',
+            'verdict_label': '✅ Correct',
+            'error_pattern': 'CORRECT',
+            'error_pattern_label': 'Correct Answer',
+            'error_reason': f'The RAG answer is substantially correct (Correctness: {corr:.2f}).',
+        }
+
+    # ── PARTIAL ──
+    if corr >= 0.4:
+        reason = f'The answer captures some information but is incomplete (Correctness: {corr:.2f}).'
+        if prec < 0.5:
+            reason += f' The retriever may have missed relevant documents (Precision: {prec:.2f}).'
+        if faith < 0.5:
+            reason += f' Part of the answer may not be grounded in the context (Faithfulness: {faith:.2f}).'
+        return {
+            'verdict': 'partial',
+            'verdict_label': '⚠️ Partial',
+            'error_pattern': 'PARTIAL',
+            'error_pattern_label': 'Partial Answer',
+            'error_reason': reason,
+        }
+
+    # ── WRONG (corr < 0.4) — classify the specific error pattern ──
+
+    if is_refusal:
+        return {
+            'verdict': 'wrong',
+            'verdict_label': '❌ Wrong',
+            'error_pattern': 'REFUSAL',
+            'error_pattern_label': 'Refusal / Non-Answer',
+            'error_reason': (
+                f'The model refused to answer or stated it lacks sufficient information. '
+                f'This may indicate the retriever failed to provide relevant context '
+                f'(Precision: {prec:.2f}, Recall: {recall:.2f}).'
+            ),
+        }
+
+    if prec < 0.3 and faith < 0.3:
+        return {
+            'verdict': 'wrong',
+            'verdict_label': '❌ Wrong',
+            'error_pattern': 'TOTAL_FAIL',
+            'error_pattern_label': 'System Collapse',
+            'error_reason': (
+                f'Both retrieval and generation failed completely. '
+                f'The retriever provided irrelevant documents (Precision: {prec:.2f}) '
+                f'and the model generated unfaithful content (Faithfulness: {faith:.2f}). '
+                f'Review the entire pipeline: embeddings, chunking strategy, and LLM prompt.'
+            ),
+        }
+
+    if prec < 0.5 and recall < 0.5:
+        return {
+            'verdict': 'wrong',
+            'verdict_label': '❌ Wrong',
+            'error_pattern': 'RET_FAIL',
+            'error_pattern_label': 'Retrieval Failure',
+            'error_reason': (
+                f'The retriever did not find the relevant documents for this query '
+                f'(Precision: {prec:.2f}, Recall: {recall:.2f}). '
+                f'The RAG answer cannot be correct without the right context. '
+                f'Consider improving embeddings, chunk size, or adding hybrid search.'
+            ),
+        }
+
+    if faith < 0.5 and (prec >= 0.5 or recall >= 0.5):
+        return {
+            'verdict': 'wrong',
+            'verdict_label': '❌ Wrong',
+            'error_pattern': 'HALLUC',
+            'error_pattern_label': 'Hallucination',
+            'error_reason': (
+                f'The model had access to relevant context but generated an answer '
+                f'not grounded in the documents (Faithfulness: {faith:.2f}). '
+                f'It may have relied on parametric knowledge or hallucinated facts. '
+                f'Review the system prompt and consider lowering the temperature.'
+            ),
+        }
+
+    if prec >= 0.5 and recall < 0.5:
+        return {
+            'verdict': 'wrong',
+            'verdict_label': '❌ Wrong',
+            'error_pattern': 'RET_NOISE',
+            'error_pattern_label': 'Retrieval Noise',
+            'error_reason': (
+                f'Retrieved documents are partially relevant (Precision: {prec:.2f}) '
+                f'but key information is missing (Recall: {recall:.2f}). '
+                f'The retriever found related content but not the specific passages needed. '
+                f'Try increasing top_k or adjusting the similarity threshold.'
+            ),
+        }
+
+    if prec >= 0.5 and recall >= 0.5 and faith >= 0.5:
+        return {
+            'verdict': 'wrong',
+            'verdict_label': '❌ Wrong',
+            'error_pattern': 'LOST_MID',
+            'error_pattern_label': 'Lost in the Middle',
+            'error_reason': (
+                f'The context contains the right information (Precision: {prec:.2f}, '
+                f'Recall: {recall:.2f}) and the model is faithful (Faithfulness: {faith:.2f}), '
+                f'but the answer is still incorrect. The model may struggle to extract '
+                f'information from long contexts. Consider reducing the number of documents '
+                f'or using a re-ranking step.'
+            ),
+        }
+
+    # Fallback for edge cases
+    return {
+        'verdict': 'wrong',
+        'verdict_label': '❌ Wrong',
+        'error_pattern': 'UNKNOWN',
+        'error_pattern_label': 'Unclassified Error',
+        'error_reason': (
+            f'The answer is incorrect (Correctness: {corr:.2f}) but the error pattern '
+            f'does not match standard categories. '
+            f'Precision: {prec:.2f}, Recall: {recall:.2f}, Faithfulness: {faith:.2f}.'
+        ),
+    }
+
 # EVALUATION PIPELINE
 
 def process_single_query(item, motore_rag, dave_client, dave_collections, ask_endpoint, threshold, conversation_memory):
@@ -530,6 +686,10 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, l
             values["ragas_fallita"] = has_nan
             rep.update(values)
 
+        # Classify verdict and error pattern for each query
+        for rep in ui_reports:
+            rep.update(classify_query_verdict(rep))
+
         # Add coverage statistics to the first report for visibility
         if ui_reports:
             ui_reports[0]["_ragas_stats"] = {
@@ -540,10 +700,12 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, l
             }
 
     except Exception as e:
-        for rep in ui_reports: rep.update({
-            "retrieval_voto": 0, "faithfulness_voto": 0, "correctness_voto": 0,
-            "relevancy_voto": 0, "recall_voto": 0, "ragas_fallita": True
-        })
+        for rep in ui_reports:
+            rep.update({
+                "retrieval_voto": 0, "faithfulness_voto": 0, "correctness_voto": 0,
+                "relevancy_voto": 0, "recall_voto": 0, "ragas_fallita": True
+            })
+            rep.update(classify_query_verdict(rep))
         raise RuntimeError(f"RAGAS Error: {e}") from e
 
     if progress_callback: progress_callback("done", 1, 1, "Completed.")

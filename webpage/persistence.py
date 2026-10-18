@@ -51,6 +51,12 @@ def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: f
                 "count": len(src_df),
             }
 
+    # aggregate error pattern counts
+    error_patterns = {}
+    if 'error_pattern' in df.columns:
+        for pattern, count in df['error_pattern'].value_counts().items():
+            error_patterns[str(pattern)] = int(count)
+
     filepath = EVAL_DIR / f"{safe_filename}_{eval_id}.json"
 
     evaluation = {
@@ -66,6 +72,7 @@ def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: f
         "rag_engine": rag_engine,
         "aggregate": aggregate,
         "per_benchmark": per_benchmark,
+        "error_patterns": error_patterns,
         "results": results,
     }
 
@@ -94,6 +101,7 @@ def list_evaluations() -> list[dict]:
                 "rag_engine": data.get("rag_engine", "Unknown"),
                 "aggregate": data.get("aggregate", {}),
                 "per_benchmark": data.get("per_benchmark", {}),
+                "error_patterns": data.get("error_patterns", {}),
                 "num_queries": len(data.get("results", [])),
                 "filepath": str(f),
             })
