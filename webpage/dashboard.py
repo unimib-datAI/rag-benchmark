@@ -1,3 +1,7 @@
+from collections import Counter
+
+from taxonomy import THRESHOLDS, diagnosis_messages
+
 def get_header_html() -> str:
     # top bar with title
     return """
@@ -21,7 +25,7 @@ def get_metric_card_html(label: str, val: float, color_class: str) -> str:
     return f"""
     <div class="metric-card">
         <div class="label">{label}</div>
-        <div class="value {color_class}">{val:.2f}</div>
+        <div class="value {color_class}">{"N/A" if val is None else f"{val:.2f}"}</div>
     </div>"""
 
 def get_breakdown_card_html(src_name: str, score: float, count: int, color_class: str) -> str:
@@ -30,7 +34,7 @@ def get_breakdown_card_html(src_name: str, score: float, count: int, color_class
     return f"""
     <div class="breakdown-card">
         <div class="src-name">{src_name}</div>
-        <div class="src-score c-{color_class}">{score:.2f}</div>
+        <div class="src-score c-{color_class}">{"N/A" if score is None else f"{score:.2f}"}</div>
         <div class="src-count">{count} queries</div>
     </div>"""
 
@@ -43,28 +47,11 @@ def get_judge_box_html(metric_label: str, v: float, reason: str, color_class: st
     </div>"""
 
 
-def get_diagnostics_html(avg_r: float, avg_f: float, avg_c: float):
+def get_diagnostics_html(reports: list):
+    # built from the per-query patterns, so it can't contradict the verdicts
     html_issues = '<div class="diag-panel issues" style="height: 100%;"><h3>🔍 Advanced Heuristic Analysis</h3>'
-    issues = []
-
-    if avg_r >= 0.7 and avg_c < 0.5:
-        issues.append("<b>Lost in the Middle / LLM Weakness:</b> Retrieval is good (>=0.7), but correctness is low. The LLM is failing to extract information from the provided documents.")
-    elif avg_r < 0.5 and avg_f >= 0.7:
-        issues.append("<b>Retrieval Failure (But Reliable LLM):</b> The LLM does not hallucinate (high Faithfulness), but the retriever is providing the wrong documents. Focus on embeddings or BM25.")
-    elif avg_f < 0.5 and avg_c < 0.5:
-        issues.append("<b>Severe Hallucination:</b> The model ignores documents and generates wrong answers. Urgently review the System Prompt and ensure the temperature is set to 0.")
-    elif avg_r < 0.5 and avg_c < 0.5:
-        # this is the worst case, nothing is working
-        issues.append("<b>System Collapse:</b> Neither retrieval nor generation are working well. Start by fixing the quality of document chunks.")
-
-    # if no issues found, give generic feedback
-    if not issues and avg_c >= 0.8:
-        issues.append("<b>Optimized System:</b> Metrics indicate a stable and high-performing RAG!")
-    elif not issues:
-        issues.append("<b>Average Performance:</b> No clear critical behavior, but there is room for improvement on all fronts.")
-
-    for iss in issues:
-        html_issues += f'<p>{iss}</p>'
+    for title, text in diagnosis_messages(reports):
+        html_issues += f'<p><b>{title}:</b> {text}</p>'
     html_issues += '</div>'
 
     return html_issues
@@ -83,6 +70,7 @@ def get_verdict_html(verdict: str, verdict_label: str, pattern_label: str, reaso
         'correct': ('#00E676', 'rgba(0, 230, 118, 0.06)', 'rgba(0, 230, 118, 0.20)'),
         'partial': ('#FFC400', 'rgba(255, 196, 0, 0.06)',  'rgba(255, 196, 0, 0.20)'),
         'wrong':   ('#FF1744', 'rgba(255, 23, 68, 0.06)',  'rgba(255, 23, 68, 0.20)'),
+        'not_evaluated': ('#94A3B8', 'rgba(148, 163, 184, 0.06)', 'rgba(148, 163, 184, 0.20)'),
     }
     color, bg, border = color_map.get(verdict, color_map['wrong'])
     pattern_html = f' — {pattern_label}' if verdict != 'correct' else ''
@@ -97,52 +85,58 @@ def get_verdict_html(verdict: str, verdict_label: str, pattern_label: str, reaso
     </div>"""
 
 
-def get_verdict_summary_html(pattern_counts: dict, total: int) -> str:
-    """Summary bar showing distribution of verdicts and error patterns across all queries, including a pattern legend."""
-    correct = pattern_counts.get('CORRECT', 0)
-    partial = pattern_counts.get('PARTIAL', 0)
-    wrong = total - correct - partial
+# Legenda dei pattern di errore: (codice, nome, descrizione, riferimento bibliografico)
+# Riferimenti completi in riferimenti_tassonomia_errori.txt
+PATTERN_LEGEND = [
+    ("RET_FAIL", "Retrieval Failure", "Il retriever non ha trovato i documenti rilevanti per rispondere alla domanda (Precision e Recall bassi).",
+     "Barnett et al. 2024, FP1 Missing Content / FP2 Missed the Top Ranked Documents"),
+    ("RET_INCOMPLETE", "Incomplete Retrieval", "I documenti estratti sono pertinenti (Precision alta) ma mancano passaggi informativi essenziali (Recall bassa).",
+     "Barnett et al. 2024, FP2 Missed the Top Ranked Documents / FP3 Not in Context"),
+    ("RET_NOISE", "Retrieval Noise", "I documenti utili ci sono (Recall alta) ma sono mescolati a molti documenti irrilevanti (Precision bassa) che confondono il modello.",
+     "Chen et al. 2024, RGB (Noise Robustness); Barnett et al. 2024, FP3 Not in Context"),
+    ("NOT_EXTRACTED", "Context Not Extracted", "Il contesto contiene le informazioni e il modello è fedele, ma non riesce ad estrarre la risposta corretta.",
+     "Barnett et al. 2024, FP4 Not Extracted; possibile causa: Liu et al. 2024, Lost in the Middle"),
+    ("OFF_TOPIC", "Off-Topic Answer", "Contesto corretto e modello fedele, ma la risposta non risponde alla domanda (Answer Relevancy bassa).",
+     "Es et al. 2024, RAGAS (Answer Relevance)"),
+    ("HALLUC", "Hallucination", "I documenti contengono la risposta, ma il modello inventa informazioni non supportate dal contesto.",
+     "Es et al. 2024, RAGAS (Faithfulness); Niu et al. 2024, RAGTruth"),
+    ("REFUSAL", "Refusal / Non-Answer", "Il modello si rifiuta di rispondere (rilevato a inizio risposta); la causa probabile è indicata dal retrieval.",
+     "Chen et al. 2024, RGB (Negative Rejection); Yang et al. 2024, CRAG (risposte 'missing')"),
+    ("TOTAL_FAIL", "System Collapse", "Fallimento contemporaneo di retrieval e generazione (nessun documento utile e risposta non fedele).",
+     "Categoria propria di SuperBenchmark: combinazione di RET_FAIL e HALLUC"),
+    ("PARTIAL", "Partial Answer", f"La risposta cattura solo una parte della verità ({THRESHOLDS['partial']:.2f} &le; Correctness &lt; {THRESHOLDS['correct']:.2f}); la causa probabile è indicata con lo stesso codice dei pattern di errore.",
+     "Barnett et al. 2024, FP7 Incomplete"),
+    ("CORRECT", "Correct Answer", f"La risposta generata dal RAG è corretta e allineata con la gold answer (Correctness &ge; {THRESHOLDS['correct']:.2f}).",
+     "Es et al. 2024, RAGAS (Answer Correctness)"),
+    ("UNKNOWN", "Unclassified Error", "Risposta errata, ma la causa non è determinabile perché mancano metriche diagnostiche.",
+     "Categoria tecnica"),
+    ("EVAL_FAIL", "Evaluation Failure", "RAGAS non è riuscito a calcolare la Correctness (errore del giudice, timeout o metrica non selezionata): la query non viene giudicata.",
+     "Errore del valutatore, non del RAG: esclusa dalla distribuzione degli errori"),
+]
+
+def get_verdict_summary_html(reports: list) -> str:
+    """Summary bar showing distribution of verdicts, error patterns and causes of partial answers."""
+    total = len(reports)
+    verdicts = Counter(r.get('verdict', 'wrong') for r in reports)
+    correct, partial, not_eval = verdicts['correct'], verdicts['partial'], verdicts['not_evaluated']
+    wrong = total - correct - partial - not_eval
+    pattern_counts = Counter(r.get('error_pattern', 'UNKNOWN') for r in reports if r.get('verdict', 'wrong') == 'wrong')
+    partial_causes = Counter(r.get('error_cause') or 'UNKNOWN' for r in reports if r.get('verdict') == 'partial')
 
     # Percentages for the stacked bar
     pct_c = (correct / total * 100) if total else 0
     pct_p = (partial / total * 100) if total else 0
     pct_w = (wrong / total * 100) if total else 0
+    pct_n = (not_eval / total * 100) if total else 0
 
-    # Build error-pattern breakdown (only wrong patterns, skip CORRECT/PARTIAL)
-    error_patterns_html = ""
-    skip = {'CORRECT', 'PARTIAL'}
-    for pattern_id, count in sorted(pattern_counts.items(), key=lambda x: -x[1]):
-        if pattern_id in skip or count == 0:
-            continue
-        error_patterns_html += f'<span class="vp-tag vp-tag-red">{pattern_id}: {count}</span>'
+    # Build error-pattern breakdown (wrong answers) and causes of partial answers
+    error_patterns_html = "".join(f'<span class="vp-tag vp-tag-red">{p}: {c}</span>' for p, c in pattern_counts.most_common())
+    partial_causes_html = "".join(f'<span class="vp-tag vp-tag-yellow">{p}: {c}</span>' for p, c in partial_causes.most_common())
 
     if not error_patterns_html and wrong == 0:
         error_patterns_html = '<span class="vp-tag vp-tag-green">No errors detected</span>'
     elif not error_patterns_html:
         error_patterns_html = '<span class="vp-tag vp-tag-red">Unclassified: {}</span>'.format(wrong)
-
-    # Legenda dei pattern di errore
-    legend_items = [
-        ("RET_FAIL", "Retrieval Failure", "Il retriever non ha trovato i documenti rilevanti per rispondere alla domanda (Precision e Recall bassi)."),
-        ("RET_NOISE", "Retrieval Noise", "I documenti estratti sono solo parzialmente utili; mancano passaggi informativi essenziali."),
-        ("LOST_MID", "Lost in the Middle", "Il contesto contiene le informazioni e il modello è fedele, ma non riesce ad estrarle da contesti lunghi/rumorosi."),
-        ("HALLUC", "Hallucination", "I documenti contengono la risposta, ma il modello inventa informazioni non supportate dal contesto."),
-        ("REFUSAL", "Refusal / Non-Answer", "Il modello si rifiuta di rispondere o dichiara di non avere elementi sufficienti."),
-        ("TOTAL_FAIL", "System Collapse", "Fallimento contemporaneo di retrieval e generazione (nessun documento utile e risposta non fedele)."),
-        ("PARTIAL", "Partial Answer", "La risposta cattura solo una parte della verità o è incompleta rispetto alla gold answer."),
-        ("CORRECT", "Correct Answer", "La risposta generata dal RAG è corretta e allineata con la gold answer (Correctness &ge; 0.70).")
-    ]
-
-    legend_rows_html = ""
-    for code, title, desc in legend_items:
-        tag_class = "vp-tag-green" if code == "CORRECT" else ("vp-tag-yellow" if code == "PARTIAL" else "vp-tag-red")
-        legend_rows_html += f"""
-        <div class="vs-legend-item">
-            <span class="vp-tag {tag_class}">{code}</span>
-            <div class="vs-legend-desc">
-                <strong>{title}</strong>: {desc}
-            </div>
-        </div>"""
 
     return f"""
     <div class="verdict-summary">
@@ -151,35 +145,27 @@ def get_verdict_summary_html(pattern_counts: dict, total: int) -> str:
             <div class="vs-seg vs-correct" style="width:{pct_c}%;" title="Correct: {correct}"></div>
             <div class="vs-seg vs-partial" style="width:{pct_p}%;" title="Partial: {partial}"></div>
             <div class="vs-seg vs-wrong"   style="width:{pct_w}%;" title="Wrong: {wrong}"></div>
+            {f'<div class="vs-seg vs-noteval" style="width:{pct_n}%;" title="Not Evaluated: {not_eval}"></div>' if not_eval else ''}
         </div>
         <div class="vs-labels">
             <span class="vs-label"><span class="vs-dot" style="background:#00E676;"></span>Correct: {correct}</span>
             <span class="vs-label"><span class="vs-dot" style="background:#FFC400;"></span>Partial: {partial}</span>
             <span class="vs-label"><span class="vs-dot" style="background:#FF1744;"></span>Wrong: {wrong}</span>
+            {f'<span class="vs-label"><span class="vs-dot" style="background:#94A3B8;"></span>Not Evaluated: {not_eval}</span>' if not_eval else ''}
         </div>
         <div class="vs-patterns">
             <span class="vs-patterns-title">Error Patterns:</span>
             {error_patterns_html}
         </div>
+        {f'<div class="vs-patterns"><span class="vs-patterns-title">Partial Causes:</span>{partial_causes_html}</div>' if partial_causes_html else ''}
     </div>"""
 
 
 def get_pattern_legend_html() -> str:
     """Returns the error pattern legend cards grid."""
-    legend_items = [
-        ("RET_FAIL", "Retrieval Failure", "Il retriever non ha trovato i documenti rilevanti per rispondere alla domanda (Precision e Recall bassi)."),
-        ("RET_NOISE", "Retrieval Noise", "I documenti estratti sono solo parzialmente utili; mancano passaggi informativi essenziali."),
-        ("LOST_MID", "Lost in the Middle", "Il contesto contiene le informazioni e il modello è fedele, ma non riesce ad estrarle da contesti lunghi/rumorosi."),
-        ("HALLUC", "Hallucination", "I documenti contengono la risposta, ma il modello inventa informazioni non supportate dal contesto."),
-        ("REFUSAL", "Refusal / Non-Answer", "Il modello si rifiuta di rispondere o dichiara di non avere elementi sufficienti."),
-        ("TOTAL_FAIL", "System Collapse", "Fallimento contemporaneo di retrieval e generazione (nessun documento utile e risposta non fedele)."),
-        ("PARTIAL", "Partial Answer", "La risposta cattura solo una parte della verità o è incompleta rispetto alla gold answer."),
-        ("CORRECT", "Correct Answer", "La risposta generata dal RAG è corretta e allineata con la gold answer (Correctness &ge; 0.70).")
-    ]
-
     legend_rows_html = ""
-    for code, title, desc in legend_items:
-        tag_class = "vp-tag-green" if code == "CORRECT" else ("vp-tag-yellow" if code == "PARTIAL" else "vp-tag-red")
-        legend_rows_html += f'<div class="vs-legend-item"><span class="vp-tag {tag_class}">{code}</span><div class="vs-legend-desc"><strong>{title}</strong>: {desc}</div></div>'
+    for code, title, desc, ref in PATTERN_LEGEND:
+        tag_class = {"CORRECT": "vp-tag-green", "PARTIAL": "vp-tag-yellow", "EVAL_FAIL": "vp-tag-grey"}.get(code, "vp-tag-red")
+        legend_rows_html += f'<div class="vs-legend-item"><span class="vp-tag {tag_class}">{code}</span><div class="vs-legend-desc"><strong>{title}</strong>: {desc}<div class="vs-legend-ref">📚 {ref}</div></div></div>'
 
     return f'<div class="vs-legend-grid">{legend_rows_html}</div>'

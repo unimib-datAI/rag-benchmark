@@ -616,6 +616,7 @@ button[kind="primary"]:active {
 .vs-correct { background: #00E676; }
 .vs-partial { background: #FFC400; }
 .vs-wrong   { background: #FF1744; }
+.vs-noteval { background: #94A3B8; }
 
 .vs-labels {
     display: flex;
@@ -682,6 +683,12 @@ button[kind="primary"]:active {
     color: #00E676;
 }
 
+.vp-tag-grey {
+    background: rgba(148, 163, 184, 0.1);
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    color: #94A3B8;
+}
+
 /* ── Legenda Error Patterns ── */
 .vs-legend-details {
     margin-top: 1rem;
@@ -727,4 +734,11 @@ button[kind="primary"]:active {
 
 .vs-legend-desc strong {
     color: #f1f5f9;
+}
+
+.vs-legend-ref {
+    margin-top: 0.35rem;
+    color: #94a3b8;
+    font-size: 0.74rem;
+    font-style: italic;
 }

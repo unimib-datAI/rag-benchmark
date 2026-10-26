@@ -1,5 +1,3 @@
- 
-
 # Guida: Come Aggiungere un Nuovo Dataset a SuperBenchmark
 
 Per aggiungere un nuovo benchmark scaricato da GitHub (o da un'altra fonte), bastano **tre passaggi**.
@@ -8,34 +6,28 @@ Per aggiungere un nuovo benchmark scaricato da GitHub (o da un'altra fonte), bas
 
 ## Step 1: Lo Script di Estrazione (`Run/extract_*.py`)
 
-I dataset grezzi si trovano in centinaia di formati diversi (CSV, JSON innestati, pagine HTML). Il primo passo è scrivere uno script Python che legga il formato grezzo e lo trasformi nel **formato standard JSON** richiesto da SuperBenchmark.
+I dataset grezzi si trovano in formati eterogenei (CSV, JSON innestati, pagine HTML). Il primo passo è scrivere uno script Python che legga il formato grezzo e lo trasformi nel **formato standard JSONL** (JSON Lines) richiesto da SuperBenchmark. L'adozione del formato JSONL consente il caricamento riga per riga in streaming, abbattendo drasticamente l'impronta di memoria.
 
-### Output Atteso (`Tutto_NUOVO.json`)
+### Output Atteso (`Tutto_NUOVO.jsonl`)
 
-Il tuo script deve generare un file JSON che contiene un array di oggetti, dove ogni oggetto ha rigorosamente questa struttura:
+Il tuo script deve generare un file `.jsonl` in cui ogni riga è un oggetto JSON valido con questa struttura:
 
 ```json
-[
-  {
-    "id": "prefisso_0001",
-    "source": "NomeDelBenchmark",
-    "query_type": "Estrazione_Semplice", 
-    "question": "Qual è la capitale della Francia?",
-    "context": "[Doc 1] La Francia è un paese europeo. La sua capitale è Parigi...",
-    "gold_answer": "Parigi"
-  }
-]
+{"id": "prefisso_0001", "source": "NomeDelBenchmark", "query_type": "Estrazione_Semplice", "question": "Qual è la capitale della Francia?", "context": "[Doc 1] La Francia è un paese europeo. La sua capitale è Parigi...", "gold_answer": "Parigi"}
 ```
 
-- `query_type`: Cerca di mapparlo su una delle categorie esistenti (es. `Estrazione_Semplice`, `Multi_Hop`, `Confronto_Aggregazione`).
-- `context`: Combina tutti i documenti necessari in un'unica stringa, delimitandoli chiaramente (es. `[Doc 1] Testo... [Doc 2] Testo...`).
+- `id`: identificativo univoco della query (es. `leg_0001`, `crag_001`).
+- `source`: nome identificativo del benchmark.
+- `query_type`: tipologia della domanda (es. `Estrazione_Semplice`, `Multi_Hop`, `Confronto_Aggregazione`).
+- `context`: combina i documenti necessari in un'unica stringa delimitata da tag (es. `[Doc 1] Testo... [Doc 2] Testo...`).
+- `gold_answer`: risposta corretta di riferimento (*ground truth*).
 
 ---
 
 ## Step 2: Ingestione Documenti su DAVE (`ingest_dave.py`)
 
-Se utilizzi il motore RAG locale, il file JSON generato al punto 1 è sufficiente.
-Se invece utilizzi **DAVE**, i documenti di contesto devono essere pre-caricati (indicizzati) sul server.
+Se utilizzi il motore RAG locale, il file JSONL generato allo Step 1 è sufficiente.
+Se invece utilizzi **DAVE**, i documenti di contesto devono essere pre-caricati e indicizzati sul server.
 
 Apri il file `ingest_dave.py` e, nella funzione `main()`, aggiungi il caricamento del tuo nuovo corpus:
 
@@ -45,7 +37,7 @@ print("\n[NuovoBenchmark] Ingesting...")
 # Crea la collezione (se non esiste)
 col_id = client.create_collection("NuovoBenchmark")
 
-# Prepara la tua lista di documenti (estratti dal json grezzo)
+# Prepara la tua lista di documenti (estratti dal corpus grezzo)
 # Formato richiesto da DAVE: [{"title": "NomeDoc", "text": "Testo del documento", "fileName": "doc_id.txt"}]
 nuovi_docs = [...] 
 
@@ -53,33 +45,39 @@ nuovi_docs = [...]
 upload_docs_in_batches(client, col_id, nuovi_docs, "NuovoBenchmark")
 ```
 
-Questo script salterà in automatico i documenti già caricati grazie alla cache locale (`.dave_docs_cache.json`).
+Lo script salterà in automatico i documenti già caricati grazie alla cache locale (`.dave_docs_cache.json`).
 
 ---
 
-## Step 3: Integrazione nella Dashboard (`app.py`)
+## Step 3: Integrazione nella Dashboard (`app.py`) e nella CLI (`cli.py`)
 
-Ora che i dati sono pronti, bisogna dire all'interfaccia Streamlit che esiste un nuovo benchmark.
+Ora che i dati sono pronti, occorre registrare il nuovo benchmark nell'applicazione:
 
-1. Apri `webpage/app.py`.
-2. Cerca il dizionario `BENCHMARK_MAPPING` all'inizio del file.
-3. Aggiungi il nuovo elemento puntando al file JSON generato allo Step 1.
+1. **Dashboard Streamlit (`webpage/app.py`):**
+   Cerca il dizionario `BENCHMARK_MAPPING` all'inizio del file e aggiungi il nuovo file JSONL:
+   ```python
+   BENCHMARK_MAPPING = {
+       "LegalBench-RAG (Contract Precision)": "Tutto_LEGALBENCH.jsonl",
+       "MultiHop-RAG (Multi-Document Synthesis)": "Tutto_MULTIHOP.jsonl",
+       "CRAG (HTML Parsing & Traps)": "Tutto_CRAG_DAVE.jsonl",
+       "MTRAG (Multi-Turn Conversations)": "Tutto_MTRAG_DAVE.jsonl",
+       "OHRBench (OCR Noise / Scans)": "Tutto_OHRBench_DAVE.jsonl",
+       "SQuAD-it (Italian Q&A on Wikipedia)": "Tutto_SQUAD.jsonl",
+     
+       # ⬇️ AGGIUNGI IL TUO BENCHMARK QUI ⬇️
+       "Il Mio Nuovo Dataset (Test X)": "Tutto_NUOVO.jsonl"
+   }
+   ```
 
-```python
-BENCHMARK_MAPPING = {
-    "LegalBench-RAG (Contract Precision)": "Tutto_LEGALBENCH.json",
-    "MultiHop-RAG (Multi-Document Synthesis)": "Tutto_MULTIHOP.json",
-    "CRAG (HTML Parsing & Traps)": "Tutto_CRAG_DAVE.json",
-    "MTRAG (Multi-Turn Conversations)": "Tutto_MTRAG_DAVE.json",
-    "OHRBench (OCR Noise / Scans)": "Tutto_OHRBench_DAVE.json",
-    "SQuAD-it (Italian Q&A on Wikipedia)": "Tutto_SQUAD.json",
-  
-    # ⬇️ AGGIUNGI LA TUA RIGA QUI ⬇️
-    "Il Mio Nuovo Dataset (Test X)": "Tutto_NUOVO.json"
-}
-```
+2. **Interfaccia CLI (`webpage/cli.py`):**
+   Aggiungi il riferimento nel dizionario `BENCHMARK_MAP`:
+   ```python
+   BENCHMARK_MAP["MIOBENCHMARK"] = "Tutto_NUOVO.jsonl"
+   ```
 
-### Fine
+---
 
-Esegui `streamlit run webpage/app.py`.
-Il tuo nuovo benchmark apparirà istantaneamente nel menù a tendina. Il motore di valutazione di SuperBenchmark applicherà automaticamente il retrieval, il filtro semantico, e invocherà l'LLM-as-a-Judge di Ragas senza bisogno di toccare la logica di valutazione.
+### Conclusione
+
+Esegui `streamlit run webpage/app.py` o lancia la CLI con `python webpage/cli.py`.
+Il nuovo benchmark apparirà immediatamente tra le opzioni disponibili. La suite eseguirà automaticamente il retrieval, il filtro semantico, la valutazione RAGAS con l'LLM Judge e la diagnosi automatica degli errori.

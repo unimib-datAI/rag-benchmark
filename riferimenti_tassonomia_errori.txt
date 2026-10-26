@@ -1,0 +1,124 @@
+RIFERIMENTI BIBLIOGRAFICI - TASSONOMIA DEGLI ERRORI DI SUPERBENCHMARK
+=====================================================================
+
+La classificazione degli errori (classify_query_verdict in webpage/taxonomy.py)
+e' un'euristica basata sulle metriche RAGAS (Answer Correctness, Faithfulness,
+Context Precision, Context Recall, Answer Relevancy). Ogni categoria e' allineata
+alle tassonomie e ai fenomeni descritti nella letteratura seguente.
+
+Nota: le soglie (0.4 / 0.5 / 0.7, costante THRESHOLDS) sono scelte empiriche non
+tratte dalla letteratura; il pattern REFUSAL e' rilevato tramite keyword nei
+primi 200 caratteri della risposta.
+
+
+1. MAPPATURA PATTERN -> FONTE
+-----------------------------
+
+RET_FAIL        (Retrieval Failure)
+                -> [1] Barnett et al. 2024: FP1 "Missing Content",
+                       FP2 "Missed the Top Ranked Documents"
+
+RET_INCOMPLETE  (Incomplete Retrieval)   [ex RET_NOISE]
+                -> [1] Barnett et al. 2024: FP2 "Missed the Top Ranked Documents",
+                       FP3 "Not in Context"
+                Rinominato perche' in [4] (RGB) "noise" indica documenti
+                irrilevanti (Precision bassa), mentre questo pattern scatta con
+                Precision alta e Recall bassa.
+
+RET_NOISE       (Retrieval Noise)        [nuovo significato]
+                -> [4] Chen et al. 2024: abilita' "Noise Robustness"
+                -> [1] Barnett et al. 2024: FP3 "Not in Context"
+                Scatta con Recall alta e Precision bassa (documenti utili
+                mescolati a documenti irrilevanti), coerente con la definizione
+                di "noise" di RGB.
+
+NOT_EXTRACTED   (Context Not Extracted)  [ex LOST_MID]
+                -> [1] Barnett et al. 2024: FP4 "Not Extracted"
+                -> [2] Liu et al. 2024 come possibile causa ("lost in the middle")
+                Rinominato perche' il classificatore non verifica la posizione
+                dell'informazione nel contesto, che e' il fenomeno studiato in [2].
+
+OFF_TOPIC       (Off-Topic Answer)       [nuovo]
+                -> [3] Es et al. 2024 (metrica Answer Relevance)
+                Contesto completo e modello fedele, ma la risposta non
+                risponde alla domanda (Answer Relevancy bassa).
+
+HALLUC          (Hallucination)
+                -> [3] Es et al. 2024 (metrica Faithfulness)
+                -> [6] Niu et al. 2024 (allucinazioni nei sistemi RAG)
+                -> [7] Ji et al. 2023 (definizione generale di allucinazione)
+
+REFUSAL         (Refusal / Non-Answer)
+                -> [4] Chen et al. 2024: abilita' "Negative Rejection"
+                -> [5] Yang et al. 2024: distinzione tra risposte "missing"
+                       ("I don't know") e "incorrect"
+                La causa probabile del rifiuto e' ricavata dal solo retrieval;
+                se il contesto era sufficiente la causa e' NOT_EXTRACTED.
+
+TOTAL_FAIL      (System Collapse)
+                -> Categoria propria di SuperBenchmark (combinazione di
+                   RET_FAIL e HALLUC); nessun equivalente diretto in letteratura.
+                Scatta con Precision e Recall basse e Faithfulness bassa.
+
+PARTIAL         (Partial Answer)
+                -> [1] Barnett et al. 2024: FP7 "Incomplete"
+                La causa probabile e' indicata con lo stesso codice dei
+                pattern di errore (campo error_cause).
+
+CORRECT         (Correct Answer)
+                -> [3] Es et al. 2024 (metrica Answer Correctness)
+
+EVAL_FAIL       (Evaluation Failure)
+                -> Categoria tecnica: RAGAS non ha calcolato la Answer
+                   Correctness. Errore del valutatore, non del RAG; esclusa
+                   dalla distribuzione degli errori.
+
+UNKNOWN         (Unclassified Error)
+                -> Categoria tecnica: risposta errata ma mancano metriche
+                   diagnostiche per stabilirne la causa.
+
+
+2. BIBLIOGRAFIA
+---------------
+
+[1] Barnett, S., Kurniawan, S., Thudumu, S., Brannelly, Z., Abdelrazek, M. (2024).
+    Seven Failure Points When Engineering a Retrieval Augmented Generation System.
+    Proceedings of the IEEE/ACM 3rd International Conference on AI Engineering -
+    Software Engineering for AI (CAIN 2024).
+    arXiv:2401.05856 - https://arxiv.org/abs/2401.05856
+
+[2] Liu, N. F., Lin, K., Hewitt, J., Paranjape, A., Bevilacqua, M., Petroni, F.,
+    Liang, P. (2024).
+    Lost in the Middle: How Language Models Use Long Contexts.
+    Transactions of the Association for Computational Linguistics (TACL), 12, 157-173.
+    arXiv:2307.03172 - https://arxiv.org/abs/2307.03172
+
+[3] Es, S., James, J., Espinosa-Anke, L., Schockaert, S. (2024).
+    RAGAs: Automated Evaluation of Retrieval Augmented Generation.
+    Proceedings of EACL 2024: System Demonstrations.
+    arXiv:2309.15217 - https://arxiv.org/abs/2309.15217
+    (presente in Paper/RAGAs.pdf)
+
+[4] Chen, J., Lin, H., Han, X., Sun, L. (2024).
+    Benchmarking Large Language Models in Retrieval-Augmented Generation.
+    Proceedings of the AAAI Conference on Artificial Intelligence, 38(16).
+    arXiv:2309.01431 - https://arxiv.org/abs/2309.01431
+    (presente in Paper/RGB.pdf)
+
+[5] Yang, X., Sun, K., Xin, H., et al. (2024).
+    CRAG - Comprehensive RAG Benchmark.
+    NeurIPS 2024, Datasets and Benchmarks Track.
+    arXiv:2406.04744 - https://arxiv.org/abs/2406.04744
+    (presente in Paper/CRAG.pdf)
+
+[6] Niu, C., Wu, Y., Zhu, J., Xu, S., Shum, K., Zhong, R., Song, J., Zhang, T. (2024).
+    RAGTruth: A Hallucination Corpus for Developing Trustworthy
+    Retrieval-Augmented Language Models.
+    Proceedings of ACL 2024.
+    arXiv:2401.00396 - https://arxiv.org/abs/2401.00396
+
+[7] Ji, Z., Lee, N., Frieske, R., Yu, T., Su, D., Xu, Y., Ishii, E., Bang, Y.,
+    Madotto, A., Fung, P. (2023).
+    Survey of Hallucination in Natural Language Generation.
+    ACM Computing Surveys, 55(12), 1-38.
+    arXiv:2202.03629 - https://arxiv.org/abs/2202.03629

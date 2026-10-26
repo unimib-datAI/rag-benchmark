@@ -10,6 +10,8 @@ from collections import defaultdict
 from pathlib import Path
 
 from langchain_core.callbacks.base import BaseCallbackHandler
+# error classification rules live in taxonomy.py (re-exported for app.py)
+from taxonomy import classify_query_verdict, METRIC_KEYS as _METRIC_KEYS
 try:
     import tiktoken
 except ImportError:
@@ -348,172 +350,20 @@ def query_dave(client, collections, question, source, actual_top_k, context_docs
     sys_prompt = client.build_system_prompt(retrieved_docs, question, max_docs=actual_top_k)
     return client.generate_answer(sys_prompt, question, collection_id=col_id), retrieved_docs
 
-def query_local_rag(endpoint, question, actual_top_k, source, context_docs, search_query):
+def query_local_rag(endpoint, question, actual_top_k, source, context_docs, search_query, inline=None):
+    """Ask the local RAG; with inline=True it answers only on context_docs (texts) instead of its index."""
     payload = {"question": question, "top_k": actual_top_k, "benchmark_name": source, "search_query": search_query}
-    if source == "OHRBench": payload["documents"] = context_docs
-        
+    if inline if inline is not None else source == "OHRBench":
+        payload["documents"] = context_docs
+
     try:
         r = requests.post(endpoint, json=payload, timeout=120)
         data = r.json()
-        return (data.get("answer", ""), data.get("contexts", [])) if r.status_code == 200 else (f"Error {r.status_code}", [])
+        if r.status_code != 200:
+            return f"Error {r.status_code}: {data.get('error', '')}".strip(), []
+        return data.get("answer", ""), data.get("contexts", [])
     except Exception as e:
         return f"Exception: {e}", []
-
-# ERROR PATTERN CLASSIFICATION
-
-_REFUSAL_PATTERNS = [
-    "non posso", "non ho informazioni", "non sono in grado",
-    "non ho abbastanza", "non è possibile determinare",
-    "non è sufficiente", "non dispongo",
-    "i cannot", "i don't have", "i'm unable", "insufficient information",
-    "not enough information", "cannot determine", "unable to answer",
-    "no information", "not sufficient", "information provided is not sufficient",
-]
-
-def classify_query_verdict(report: dict) -> dict:
-    """Classify a single query result with a verdict and error pattern.
-
-    Uses only the RAGAS metrics already computed — no additional LLM calls.
-
-    Returns a dict with:
-      - verdict: 'correct' | 'partial' | 'wrong'
-      - verdict_label: human-readable label with emoji
-      - error_pattern: pattern ID (e.g. 'RET_FAIL')
-      - error_pattern_label: human-readable pattern name
-      - error_reason: explanation string
-    """
-    corr  = float(report.get('correctness_voto', 0) or 0)
-    faith = float(report.get('faithfulness_voto', 0) or 0)
-    prec  = float(report.get('retrieval_voto', 0) or 0)
-    recall = float(report.get('recall_voto', 0) or 0)
-    answer = str(report.get('risposta_rag', '')).lower()
-
-    # Check for refusal first (keyword-based)
-    is_refusal = any(p in answer for p in _REFUSAL_PATTERNS)
-
-    # ── CORRECT ──
-    if corr >= 0.7:
-        return {
-            'verdict': 'correct',
-            'verdict_label': '✅ Correct',
-            'error_pattern': 'CORRECT',
-            'error_pattern_label': 'Correct Answer',
-            'error_reason': f'The RAG answer is substantially correct (Correctness: {corr:.2f}).',
-        }
-
-    # ── PARTIAL ──
-    if corr >= 0.4:
-        reason = f'The answer captures some information but is incomplete (Correctness: {corr:.2f}).'
-        if prec < 0.5:
-            reason += f' The retriever may have missed relevant documents (Precision: {prec:.2f}).'
-        if faith < 0.5:
-            reason += f' Part of the answer may not be grounded in the context (Faithfulness: {faith:.2f}).'
-        return {
-            'verdict': 'partial',
-            'verdict_label': '⚠️ Partial',
-            'error_pattern': 'PARTIAL',
-            'error_pattern_label': 'Partial Answer',
-            'error_reason': reason,
-        }
-
-    # ── WRONG (corr < 0.4) — classify the specific error pattern ──
-
-    if is_refusal:
-        return {
-            'verdict': 'wrong',
-            'verdict_label': '❌ Wrong',
-            'error_pattern': 'REFUSAL',
-            'error_pattern_label': 'Refusal / Non-Answer',
-            'error_reason': (
-                f'The model refused to answer or stated it lacks sufficient information. '
-                f'This may indicate the retriever failed to provide relevant context '
-                f'(Precision: {prec:.2f}, Recall: {recall:.2f}).'
-            ),
-        }
-
-    if prec < 0.3 and faith < 0.3:
-        return {
-            'verdict': 'wrong',
-            'verdict_label': '❌ Wrong',
-            'error_pattern': 'TOTAL_FAIL',
-            'error_pattern_label': 'System Collapse',
-            'error_reason': (
-                f'Both retrieval and generation failed completely. '
-                f'The retriever provided irrelevant documents (Precision: {prec:.2f}) '
-                f'and the model generated unfaithful content (Faithfulness: {faith:.2f}). '
-                f'Review the entire pipeline: embeddings, chunking strategy, and LLM prompt.'
-            ),
-        }
-
-    if prec < 0.5 and recall < 0.5:
-        return {
-            'verdict': 'wrong',
-            'verdict_label': '❌ Wrong',
-            'error_pattern': 'RET_FAIL',
-            'error_pattern_label': 'Retrieval Failure',
-            'error_reason': (
-                f'The retriever did not find the relevant documents for this query '
-                f'(Precision: {prec:.2f}, Recall: {recall:.2f}). '
-                f'The RAG answer cannot be correct without the right context. '
-                f'Consider improving embeddings, chunk size, or adding hybrid search.'
-            ),
-        }
-
-    if faith < 0.5 and (prec >= 0.5 or recall >= 0.5):
-        return {
-            'verdict': 'wrong',
-            'verdict_label': '❌ Wrong',
-            'error_pattern': 'HALLUC',
-            'error_pattern_label': 'Hallucination',
-            'error_reason': (
-                f'The model had access to relevant context but generated an answer '
-                f'not grounded in the documents (Faithfulness: {faith:.2f}). '
-                f'It may have relied on parametric knowledge or hallucinated facts. '
-                f'Review the system prompt and consider lowering the temperature.'
-            ),
-        }
-
-    if prec >= 0.5 and recall < 0.5:
-        return {
-            'verdict': 'wrong',
-            'verdict_label': '❌ Wrong',
-            'error_pattern': 'RET_NOISE',
-            'error_pattern_label': 'Retrieval Noise',
-            'error_reason': (
-                f'Retrieved documents are partially relevant (Precision: {prec:.2f}) '
-                f'but key information is missing (Recall: {recall:.2f}). '
-                f'The retriever found related content but not the specific passages needed. '
-                f'Try increasing top_k or adjusting the similarity threshold.'
-            ),
-        }
-
-    if prec >= 0.5 and recall >= 0.5 and faith >= 0.5:
-        return {
-            'verdict': 'wrong',
-            'verdict_label': '❌ Wrong',
-            'error_pattern': 'LOST_MID',
-            'error_pattern_label': 'Lost in the Middle',
-            'error_reason': (
-                f'The context contains the right information (Precision: {prec:.2f}, '
-                f'Recall: {recall:.2f}) and the model is faithful (Faithfulness: {faith:.2f}), '
-                f'but the answer is still incorrect. The model may struggle to extract '
-                f'information from long contexts. Consider reducing the number of documents '
-                f'or using a re-ranking step.'
-            ),
-        }
-
-    # Fallback for edge cases
-    return {
-        'verdict': 'wrong',
-        'verdict_label': '❌ Wrong',
-        'error_pattern': 'UNKNOWN',
-        'error_pattern_label': 'Unclassified Error',
-        'error_reason': (
-            f'The answer is incorrect (Correctness: {corr:.2f}) but the error pattern '
-            f'does not match standard categories. '
-            f'Precision: {prec:.2f}, Recall: {recall:.2f}, Faithfulness: {faith:.2f}.'
-        ),
-    }
 
 # EVALUATION PIPELINE
 
@@ -553,8 +403,13 @@ def process_single_query(item, motore_rag, dave_client, dave_collections, ask_en
             sys_prompt = dave_client.build_system_prompt(filtered_docs, sent_question, max_docs=fetch_k)
             col_name = {"MultiHop-RAG": "MultiHop", "LegalBench-RAG": "LegalBench", "SQuAD-it": "SQuAD"}.get(source, source)
             rag_answer = dave_client.generate_answer(sys_prompt, sent_question, collection_id=dave_collections.get(col_name))
+    elif source == "OHRBench" or len(filtered_docs) < len(retrieved_docs):
+        # RAGAS judges only the filtered documents: the answer must be generated on the
+        # same ones, otherwise facts from discarded documents look like hallucinations
+        filtered_texts = [_extract_doc_text(d) for d in filtered_docs]
+        rag_answer = query_local_rag(ask_endpoint, sent_question, fetch_k, source, filtered_texts, search_query, inline=True)[0]
     else:
-        rag_answer = rag_answer_temp if source != "OHRBench" else query_local_rag(ask_endpoint, sent_question, fetch_k, source, filtered_docs, search_query)[0]
+        rag_answer = rag_answer_temp
 
     if source == "MTRAG":
         conversation_memory[conv_id] = conversation_memory.get(conv_id, "") + f"User: {raw_question}\nAssistant: {rag_answer}\n"
@@ -654,8 +509,8 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, l
             raise_exceptions=False
         ).to_pandas()
 
-        # Count queries with failed metrics (NaN)
-        metric_cols = ["context_precision", "faithfulness", "answer_correctness", "answer_relevancy", "context_recall"]
+        # Count queries with failed metrics (NaN), only among the metrics actually computed
+        metric_cols = [c for c in _METRIC_KEYS.values() if c in df_ragas.columns]
         failed_queries = int(df_ragas[metric_cols].isna().any(axis=1).sum())
         total_queries = len(df_ragas)
         successful_queries = total_queries - failed_queries
@@ -669,21 +524,18 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, l
 
         for idx, rep in enumerate(ui_reports):
             row = df_ragas.iloc[idx]
-            # Use 0.0 as fallback for NaN, but mark the query as failed
-            values = {
-                "retrieval_voto": float(row.get("context_precision", 0)),
-                "faithfulness_voto": float(row.get("faithfulness", 0)),
-                "correctness_voto": float(row.get("answer_correctness", 0)),
-                "relevancy_voto": float(row.get("answer_relevancy", 0)),
-                "recall_voto": float(row.get("context_recall", 0)),
-            }
-            # Replace NaN with 0.0 and mark as failed
-            has_nan = False
-            for k, v in values.items():
+            # Use 0.0 as fallback for NaN or not selected metrics, but keep track of them
+            # in 'metriche_non_valide' so the classifier ignores them
+            values, invalid, has_nan = {}, [], False
+            for key, col in _METRIC_KEYS.items():
+                v = float(row[col]) if col in df_ragas.columns else math.nan
                 if math.isnan(v):
-                    values[k] = 0.0
-                    has_nan = True
+                    invalid.append(key)
+                    has_nan = has_nan or col in df_ragas.columns
+                    v = 0.0
+                values[key] = v
             values["ragas_fallita"] = has_nan
+            values["metriche_non_valide"] = invalid
             rep.update(values)
 
         # Classify verdict and error pattern for each query
@@ -703,7 +555,8 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, l
         for rep in ui_reports:
             rep.update({
                 "retrieval_voto": 0, "faithfulness_voto": 0, "correctness_voto": 0,
-                "relevancy_voto": 0, "recall_voto": 0, "ragas_fallita": True
+                "relevancy_voto": 0, "recall_voto": 0, "ragas_fallita": True,
+                "metriche_non_valide": list(_METRIC_KEYS),
             })
             rep.update(classify_query_verdict(rep))
         raise RuntimeError(f"RAGAS Error: {e}") from e

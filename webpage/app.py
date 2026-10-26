@@ -11,7 +11,9 @@ from pathlib import Path
 from langchain_ollama import ChatOllama
 
 from evaluator import run_evaluation, parse_llm_endpoint_or_key, classify_query_verdict
+from taxonomy import metric_mean, metric_value, needs_reclassification
 from persistence import save_evaluation, list_evaluations, load_evaluation, delete_evaluation
+from benchmark_download import build_benchmarks_zip
 
 import importlib
 import dashboard as dash
@@ -103,10 +105,14 @@ def invoke_ollama(prompt: str, ollama_url: str, model: str, llm_api_key: str = "
 
 # color based on score (green/yellow/red)
 def _value_color(v: float) -> str:
-    if pd.isna(v): return "red"
+    if v is None or pd.isna(v): return "grey"
     if v >= 0.7: return "green"
     if v >= 0.4: return "yellow"
     return "red"
+
+def _fmt_score(v) -> str:
+    # metrics not computed by RAGAS are None and shown as N/A
+    return "N/A" if v is None else f"{v:.2f}"
 
 def _short_source(source: str) -> str:
     # get short name from dict, if any
@@ -173,6 +179,33 @@ with st.sidebar:
     selected_files = [BENCHMARK_MAPPING[name] for name in selected_names]
     st.caption(f"{len(selected_names)} of {len(BENCHMARK_MAPPING)} selected")
 
+    # the raw benchmarks are not in the repository: download them from the official sources
+    if st.button("Download Benchmark", width='stretch', disabled=st.session_state.running,
+                 help="Downloads the raw files of the 6 benchmarks (~1 GB) into a .zip in the project folder"):
+        # clicking Cancel makes Streamlit interrupt this run at the next progress update;
+        # build_benchmarks_zip then removes the partial zip and the temporary files
+        cancel_slot = st.empty()
+        cancel_slot.button("Cancel Download", width='stretch',
+                           on_click=lambda: st.session_state.update(download_cancelled=True))
+        bar = st.progress(0.0, text="Starting download...")
+
+        def _show_progress(step, n_steps, label, done, total):
+            fraction = (step + (done / total if total else 0)) / n_steps
+            size = f"{done / 2**20:.0f}/{total / 2**20:.0f} MB" if total else f"{done / 2**20:.0f} MB"
+            bar.progress(min(fraction, 1.0), text=f"[{step + 1}/{n_steps}] {label}: {size}")
+
+        try:
+            zip_path = build_benchmarks_zip(progress=_show_progress)
+            cancel_slot.empty()
+            bar.empty()
+            st.success(f"Saved `{zip_path}`. Extract it in the project folder, then run the `Run/extract_*.py` scripts.")
+        except Exception as e:
+            cancel_slot.empty()
+            bar.empty()
+            st.error(f"Benchmark download failed: {e}")
+    elif st.session_state.pop("download_cancelled", False):
+        st.info("Download cancelled.")
+
     st.markdown('<p class="sidebar-label" style="margin-top: 1rem;">Queries per Benchmark</p>', unsafe_allow_html=True)
     sample_size_param = st.number_input("sample_size_param", min_value=1, value=3, step=1, label_visibility="collapsed")
 
@@ -227,9 +260,9 @@ if not st.session_state.running and not st.session_state.results:
         last_eval = saved_evals[0]
         complete_evals = load_evaluation(last_eval["filepath"])
         loaded_results = complete_evals.get("results", [])
-        # retroactive classification for old evaluations without verdict
+        # retroactive classification for old evaluations (missing verdict or older taxonomy)
         for rep in loaded_results:
-            if 'verdict' not in rep and 'correctness_voto' in rep:
+            if needs_reclassification(rep):
                 rep.update(classify_query_verdict(rep))
         st.session_state.results = loaded_results
         st.session_state.current_eval_name = complete_evals.get("name", "")
@@ -374,11 +407,11 @@ with tab_evaluation:
         reports = st.session_state.results
         df = pd.DataFrame(reports)
 
-        # averages of main metrics
-        avg_c = df['correctness_voto'].mean()
-        avg_f = df['faithfulness_voto'].mean()
-        avg_r = df['retrieval_voto'].mean()
-        avg_recall = df['recall_voto'].mean() if 'recall_voto' in df.columns else 0.0
+        # averages of main metrics, only over the queries where RAGAS computed them
+        avg_c = metric_mean(reports, 'correctness_voto')
+        avg_f = metric_mean(reports, 'faithfulness_voto')
+        avg_r = metric_mean(reports, 'retrieval_voto')
+        avg_recall = metric_mean(reports, 'recall_voto')
 
         # metrics overview (4 RAGAS metrics)
         curr_name = st.session_state.get("current_eval_name", "")
@@ -400,7 +433,7 @@ with tab_evaluation:
             if truncated_contexts > 0:
                 msg_parts.append(f"**{truncated_contexts}** truncated contexts (exceeded model limit)")
             if failed_queries > 0:
-                msg_parts.append(f"**{failed_queries}/{len(reports)}** queries with failed RAGAS metrics (set to 0.0)")
+                msg_parts.append(f"**{failed_queries}/{len(reports)}** queries with failed RAGAS metrics (excluded from the averages)")
             st.markdown('<div style="margin-top: 1.5rem; margin-bottom: 1rem;">', unsafe_allow_html=True)
             st.warning("⚠️ " + " · ".join(msg_parts) + ". The averages might not reflect all queries.")
             st.markdown('</div>', unsafe_allow_html=True)
@@ -412,7 +445,7 @@ with tab_evaluation:
             cols = st.columns(len(sources))
             for i, src in enumerate(sources):
                 src_df = df[df['source'] == src]
-                sc = src_df['correctness_voto'].mean()
+                sc = metric_mean([r for r in reports if r['source'] == src], 'correctness_voto')
                 with cols[i]:
                     st.markdown(dash.get_breakdown_card_html(_short_source(src), sc, len(src_df), _value_color(sc)), unsafe_allow_html=True)
 
@@ -420,7 +453,7 @@ with tab_evaluation:
         pattern_counts = defaultdict(int)
         for rep in reports:
             pattern_counts[rep.get('error_pattern', 'UNKNOWN')] += 1
-        st.markdown(dash.get_verdict_summary_html(dict(pattern_counts), len(reports)), unsafe_allow_html=True)
+        st.markdown(dash.get_verdict_summary_html(reports), unsafe_allow_html=True)
         
         with st.expander("📖 Mostra Legenda & Significato dei Pattern di Errore"):
             st.markdown(get_pattern_legend_html(), unsafe_allow_html=True)
@@ -438,6 +471,9 @@ with tab_evaluation:
                 df[col] = ''
 
         display_df = df[[c for c in cols_needed if c in df.columns]].copy()
+        for col in display_df.columns:
+            if col.endswith('_voto'):
+                display_df[col] = [metric_value(r, col) for r in reports]
         
         column_rename = {
             'query_id': 'Query',
@@ -454,7 +490,7 @@ with tab_evaluation:
         
         numeric_cols = [c for c in ['C. Precision', 'C. Recall', 'Faithfulness', 'Correctness', 'Relevancy'] if c in display_df.columns]
         st.dataframe(
-            display_df.style.format({c: '{:.2f}' for c in numeric_cols})
+            display_df.style.format({c: '{:.2f}' for c in numeric_cols}, na_rep="—")
             .background_gradient(subset=numeric_cols, cmap='RdYlGn', vmin=0, vmax=1),
             width='stretch', hide_index=True,
         )
@@ -486,6 +522,8 @@ with tab_evaluation:
             v_label = rep.get('verdict_label', '')
             pattern = rep.get('error_pattern_label', '')
             pattern_suffix = f"  |  {pattern}" if rep.get('verdict') == 'wrong' else ""
+            if rep.get('verdict') == 'partial' and rep.get('error_cause_label'):
+                pattern_suffix = f"  |  cause: {rep['error_cause_label']}"
             label = f"{rep['query_id']}  |  {rep['source']}  |  {v_label}{pattern_suffix}  |  Correctness: {corr:.2f}"
             with st.expander(label):
                 st.markdown("**Question**")
@@ -503,11 +541,11 @@ with tab_evaluation:
                 st.markdown("**Ragas Metrics (LLM)**")
                 m1, m2, m3, m4, m5 = st.columns(5)
                 for col, metric_key, metric_label in [(m1, 'retrieval', 'Context Precis.'), (m2, 'recall', 'Context Recall'), (m3, 'faithfulness', 'Faithfulness'), (m4, 'correctness', 'Correctness'), (m5, 'relevancy', 'Relevancy')]:
-                    raw_v = rep.get(f'{metric_key}_voto', 0)
-                    v = round(float(raw_v), 3) if pd.notna(raw_v) else 0.0
+                    raw_v = metric_value(rep, f'{metric_key}_voto')
+                    v = round(raw_v, 3) if raw_v is not None else "N/A"
                     reason = ""  # ragas returns only scores, not reasons unfortunately
                     with col:
-                        st.markdown(dash.get_judge_box_html(metric_label, v, reason, _value_color(v)), unsafe_allow_html=True)
+                        st.markdown(dash.get_judge_box_html(metric_label, v, reason, _value_color(raw_v)), unsafe_allow_html=True)
 
                 # verdict card with error pattern classification
                 st.markdown(dash.get_verdict_html(
@@ -523,25 +561,26 @@ with tab_evaluation:
         # diagnostics and expert advice
         st.markdown('<div class="section-title">Diagnostics & Expert Report</div>', unsafe_allow_html=True)
 
-        html_issues = dash.get_diagnostics_html(avg_r, avg_f, avg_c)
+        html_issues = dash.get_diagnostics_html(reports)
         st.markdown(html_issues, unsafe_allow_html=True)
 
-        worst_query = min(reports, key=lambda x: x['correctness_voto'] + x['retrieval_voto'], default=None)
-        best_query = max(reports, key=lambda x: x['correctness_voto'] + x['retrieval_voto'], default=None)
+        # queries not evaluated by RAGAS have fake 0.0 scores: keep them out of best/worst
+        evaluated = [r for r in reports if r.get('verdict') != 'not_evaluated']
+        worst_query = min(evaluated, key=lambda x: x['correctness_voto'] + x['retrieval_voto'], default=None)
+        best_query = max(evaluated, key=lambda x: x['correctness_voto'] + x['retrieval_voto'], default=None)
 
         if worst_query and "llm_advice" not in st.session_state:
             with st.spinner("🧠 AI RAG Expert is writing the analysis report..."):
                 # build per-benchmark summary
                 benchmark_summary = ""
                 for src in sources:
-                    src_df = df[df['source'] == src]
-                    recall_str = f"{src_df['recall_voto'].mean():.2f}" if 'recall_voto' in src_df.columns else "N/A"
+                    src_reports = [r for r in reports if r['source'] == src]
                     benchmark_summary += (
-                        f"  - {src}: Correctness={src_df['correctness_voto'].mean():.2f}, "
-                        f"Faithfulness={src_df['faithfulness_voto'].mean():.2f}, "
-                        f"Precision={src_df['retrieval_voto'].mean():.2f}, "
-                        f"Recall={recall_str} "
-                        f"({len(src_df)} queries)\n"
+                        f"  - {src}: Correctness={_fmt_score(metric_mean(src_reports, 'correctness_voto'))}, "
+                        f"Faithfulness={_fmt_score(metric_mean(src_reports, 'faithfulness_voto'))}, "
+                        f"Precision={_fmt_score(metric_mean(src_reports, 'retrieval_voto'))}, "
+                        f"Recall={_fmt_score(metric_mean(src_reports, 'recall_voto'))} "
+                        f"({len(src_reports)} queries)\n"
                     )
 
                 # build error patterns summary
@@ -552,10 +591,10 @@ with tab_evaluation:
                 PROMPT_EXPERT = f"""You are a Senior RAG System Architect. Provide a clear, clean and concise evaluation report.
 
 EVALUATION METRICS (averaged over {len(reports)} queries):
-- Answer Correctness: {avg_c:.2f}
-- Faithfulness: {avg_f:.2f}
-- Context Precision: {avg_r:.2f}
-- Context Recall: {avg_recall:.2f}
+- Answer Correctness: {_fmt_score(avg_c)}
+- Faithfulness: {_fmt_score(avg_f)}
+- Context Precision: {_fmt_score(avg_r)}
+- Context Recall: {_fmt_score(avg_recall)}
 
 ERROR PATTERNS DETECTED:
 {err_pattern_summary}
@@ -632,7 +671,7 @@ with tab_explore:
 
         for idx, ev in enumerate(saved_evals):
             ts = datetime.fromisoformat(ev["timestamp"]).strftime("%d/%m/%Y %H:%M")
-            avg_corr = ev.get("aggregate", {}).get("answer_correctness", 0.0)
+            avg_corr = ev.get("aggregate", {}).get("answer_correctness")
             color = _value_color(avg_corr)
             color_hex = {"green": "#00E676", "yellow": "#FFC400", "red": "#FF1744"}.get(color, "#a2a2c0")
 
@@ -647,7 +686,7 @@ with tab_explore:
                 f'    <span class="eval-card-detail">RAG: <strong>{ev.get("rag_engine", "Unknown")}</strong></span>'
                 f'    <span class="eval-card-detail">Model: <strong>{ev.get("model", "Unknown")}</strong></span>'
                 f'    <span class="eval-card-detail">Queries: <strong style="font-family:JetBrains Mono,monospace">{ev["num_queries"]}</strong></span>'
-                f'    <span class="eval-card-detail">Correctness: <strong style="color:{color_hex};font-family:JetBrains Mono,monospace">{avg_corr:.2f}</strong></span>'
+                f'    <span class="eval-card-detail">Correctness: <strong style="color:{color_hex};font-family:JetBrains Mono,monospace">{_fmt_score(avg_corr)}</strong></span>'
                 f'  </div>'
                 f'</div>'
             )
@@ -667,7 +706,7 @@ with tab_explore:
                     full_eval = load_evaluation(ev["filepath"])
                     loaded_results = full_eval.get("results", [])
                     for rep in loaded_results:
-                        if 'verdict' not in rep and 'correctness_voto' in rep:
+                        if needs_reclassification(rep):
                             rep.update(classify_query_verdict(rep))
                     st.session_state.results = loaded_results
                     st.session_state.current_eval_name = full_eval.get("name", "")
@@ -695,7 +734,7 @@ with tab_explore:
                 agg = ev.get("aggregate", {})
                 row = {"Evaluation": ev["name"], "RAG Engine": ev.get("rag_engine", "—"), "LLM Judge": ev.get("model", "—")}
                 for k, label in zip(metric_keys, metric_labels):
-                    row[label] = round(agg.get(k, 0.0), 2)
+                    row[label] = round(agg[k], 2) if agg.get(k) is not None else None
                 table_agg_rows.append(row)
             
             st.dataframe(pd.DataFrame(table_agg_rows), use_container_width=True)
@@ -710,7 +749,7 @@ with tab_explore:
             query_meta: dict[str, dict] = {}
             for ev in selected_for_compare:
                 for res in loaded_evals[ev["name"]].get("results", []):
-                    if 'verdict' not in res and 'correctness_voto' in res:
+                    if needs_reclassification(res):
                         res.update(classify_query_verdict(res))
                     qid = res.get("query_id", "")
                     if qid not in query_results_map:
@@ -863,7 +902,7 @@ with tab_explore:
                 fig = go.Figure()
                 for i, ev in enumerate(selected_for_compare):
                     agg = ev.get("aggregate", {})
-                    values = [agg.get(k, 0) for k in metric_keys]
+                    values = [agg.get(k) for k in metric_keys]
                     values_closed = values + [values[0]] 
                     labels_closed = metric_labels + [metric_labels[0]]
                     fig.add_trace(go.Scatterpolar(
@@ -890,7 +929,7 @@ with tab_explore:
                 fig = go.Figure()
                 for i, ev in enumerate(selected_for_compare):
                     agg = ev.get("aggregate", {})
-                    values = [agg.get(k, 0) for k in metric_keys]
+                    values = [agg.get(k) for k in metric_keys]
                     fig.add_trace(go.Bar(
                         x=metric_labels,
                         y=values,
@@ -951,15 +990,15 @@ with tab_explore:
                 st.info("No per-benchmark data available.")
 
             # summary: best evaluation among the selected ones
-            best_ev = max(selected_for_compare, key=lambda e: e.get("aggregate", {}).get("answer_correctness", 0))
-            best_score = best_ev.get("aggregate", {}).get("answer_correctness", 0)
+            best_ev = max(selected_for_compare, key=lambda e: e.get("aggregate", {}).get("answer_correctness") or 0)
+            best_score = best_ev.get("aggregate", {}).get("answer_correctness")
             best_ts = datetime.fromisoformat(best_ev["timestamp"]).strftime("%d/%m/%Y %H:%M")
 
             summary_html = (
                 '<div class="eval-card" style="border-left:4px solid #00E676;">'
                 '  <div class="eval-card-header">'
                 '    <span class="eval-card-name">🏆 Best Evaluation</span>'
-                f'    <span class="eval-best-badge">{best_score:.2f}</span>'
+                f'    <span class="eval-best-badge">{_fmt_score(best_score)}</span>'
                 '  </div>'
                 '  <div class="eval-card-body">'
                 f'    <span class="eval-card-detail"><strong>{best_ev["name"]}</strong></span>'
@@ -987,14 +1026,14 @@ with tab_explore:
                                 summary_text = (
                                     f"- **{ev['name']}** (RAG: {ev.get('rag_engine', '?')}, Judge: {ev.get('model', '?')}, "
                                     f"Queries: {ev.get('num_queries', '?')})\n"
-                                    f"  Correctness={agg.get('answer_correctness', 0):.2f}, "
-                                    f"Faithfulness={agg.get('faithfulness', 0):.2f}, "
-                                    f"Context Precision={agg.get('context_precision', 0):.2f}, "
-                                    f"Context Recall={agg.get('context_recall', 0):.2f}"
+                                    f"  Correctness={_fmt_score(agg.get('answer_correctness'))}, "
+                                    f"Faithfulness={_fmt_score(agg.get('faithfulness'))}, "
+                                    f"Context Precision={_fmt_score(agg.get('context_precision'))}, "
+                                    f"Context Recall={_fmt_score(agg.get('context_recall'))}"
                                 )
                                 summary_text += "\n  Per-benchmark: "
                                 for bm_name, bm_data in ev.get("per_benchmark", {}).items():
-                                    summary_text += f"{_short_source(bm_name)}(corr={bm_data.get('answer_correctness', 0):.2f}) "
+                                    summary_text += f"{_short_source(bm_name)}(corr={_fmt_score(bm_data.get('answer_correctness'))}) "
                                 eval_summaries.append(summary_text)
 
                             # find a shared query where the two evals differ the most

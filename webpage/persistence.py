@@ -3,9 +3,20 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from taxonomy import metric_mean
+
 # folder where evaluation JSON files are saved
 EVAL_DIR = Path(__file__).resolve().parents[1] / "valutazioni"
 EVAL_DIR.mkdir(exist_ok=True)
+
+# aggregate name -> report key
+AGGREGATE_KEYS = {
+    "answer_correctness": "correctness_voto",
+    "faithfulness": "faithfulness_voto",
+    "context_precision": "retrieval_voto",
+    "answer_relevancy": "relevancy_voto",
+    "context_recall": "recall_voto",
+}
 
 
 def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: float,
@@ -24,32 +35,21 @@ def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: f
     if not safe_filename:
         safe_filename = f"eval_{eval_id}"
 
-    # calculate aggregate averages with pandas
+    # calculate aggregate averages, only over the queries where RAGAS computed each
+    # metric (None if it was never computed, e.g. deselected in the UI)
     import pandas as pd
     df = pd.DataFrame(results)
 
-    # if a column is missing, set 0.0 as default
-    aggregate = {
-        "answer_correctness": float(df['correctness_voto'].mean()) if 'correctness_voto' in df else 0.0,
-        "faithfulness": float(df['faithfulness_voto'].mean()) if 'faithfulness_voto' in df else 0.0,
-        "context_precision": float(df['retrieval_voto'].mean()) if 'retrieval_voto' in df else 0.0,
-        "answer_relevancy": float(df['relevancy_voto'].mean()) if 'relevancy_voto' in df else 0.0,
-        "context_recall": float(df['recall_voto'].mean()) if 'recall_voto' in df else 0.0,
-    }
+    def _averages(reports):
+        return {agg: metric_mean(reports, key) for agg, key in AGGREGATE_KEYS.items()}
+
+    aggregate = _averages(results)
 
     # breakdown per benchmark
     per_benchmark = {}
-    if 'source' in df.columns:
-        for src in df['source'].unique():
-            src_df = df[df['source'] == src]
-            per_benchmark[src] = {
-                "answer_correctness": float(src_df['correctness_voto'].mean()),
-                "faithfulness": float(src_df['faithfulness_voto'].mean()),
-                "context_precision": float(src_df['retrieval_voto'].mean()),
-                "answer_relevancy": float(src_df['relevancy_voto'].mean()) if 'relevancy_voto' in src_df else 0.0,
-                "context_recall": float(src_df['recall_voto'].mean()) if 'recall_voto' in src_df else 0.0,
-                "count": len(src_df),
-            }
+    for src in sorted({r.get('source') for r in results if r.get('source')}):
+        src_results = [r for r in results if r.get('source') == src]
+        per_benchmark[src] = {**_averages(src_results), "count": len(src_results)}
 
     # aggregate error pattern counts
     error_patterns = {}

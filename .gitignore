@@ -221,3 +221,9 @@ __marimo__/
 .dave_collections.json
 .dave_docs_cache.json
 config.json
+
+# Raw benchmarks (downloaded with the "Download Benchmark" button)
+Benchmarks/
+Benchmarks.zip
+Benchmarks_download.zip
+Benchmarks_download.zip.part

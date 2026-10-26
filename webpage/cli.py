@@ -2,7 +2,7 @@ import sys
 import json
 import random
 import argparse
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 # used to import evaluator and persistence from the same folder
@@ -18,6 +18,7 @@ if hasattr(sys.stderr, "reconfigure"):
 try:
     from evaluator import run_evaluation
     from persistence import save_evaluation, list_evaluations, load_evaluation, EVAL_DIR
+    from taxonomy import diagnosis_messages, metric_mean, metric_value
 except ImportError as e:
     print(f"Import error: {e}")
     sys.exit(1)
@@ -88,20 +89,14 @@ def normalize_selection_mode(val: str) -> str:
 
 # ── diagnostics (aligned with app.py) ──────────────────────────────
 
-def generate_diagnostic(avg_precision, avg_faithfulness, avg_correctness):
-    """Rule-based pattern classification aligned with the UI diagnostics."""
-    diag = []
-    if avg_precision < 0.4 and avg_correctness < 0.4:
-        diag.append("🔴 Retriever Failure — Il motore di ricerca non ha recuperato documenti sufficientemente pertinenti.")
-    if avg_precision >= 0.5 and avg_faithfulness < 0.4:
-        diag.append("🟠 Generator Hallucination — Il contesto recuperato è adeguato, ma l'LLM ha generato asserzioni non supportate.")
-    if avg_correctness >= 0.3 and avg_faithfulness >= 0.5 and avg_precision < 0.4:
-        diag.append("🟡 Context Distraction — Eccessivo rumore o dettagli secondari nei frammenti hanno diluito la risposta.")
-    if avg_precision < 0.5 and avg_faithfulness < 0.5 and avg_correctness < 0.3:
-        diag.append("⚫ Mixed Failure — Sia il modulo di retrieval che quello di generazione necessitano di ottimizzazione.")
-    if avg_precision >= 0.6 and avg_faithfulness >= 0.6 and avg_correctness >= 0.5:
-        diag.append("🟢 Strong Performance — La pipeline risponde con elevata fedeltà, precisione e correttezza sui benchmark testati.")
-    return diag if diag else ["⚪ Nessun pattern anomalo prevalente rilevato."]
+def generate_diagnostic(results):
+    """Aggregated diagnosis from the per-query error patterns (same rules as the UI)."""
+    return [f"{title}: {text}" for title, text in diagnosis_messages(results)]
+
+
+def _score(v, width=0, digits=4):
+    # metrics not computed by RAGAS are None and shown as n/a
+    return f"{'n/a':>{width}}" if v is None else f"{v:>{width}.{digits}f}"
 
 
 # ── history / explore ──────────────────────────────────────────────
@@ -121,9 +116,9 @@ def print_history():
 
     for ev in evals[:25]:
         agg = ev.get("aggregate", {})
-        corr = f"{agg.get('answer_correctness', 0):.3f}"
-        faith = f"{agg.get('faithfulness', 0):.3f}"
-        prec = f"{agg.get('context_precision', 0):.3f}"
+        corr = _score(agg.get('answer_correctness'), digits=3)
+        faith = _score(agg.get('faithfulness'), digits=3)
+        prec = _score(agg.get('context_precision'), digits=3)
         ts = ev.get("timestamp", "")[:16].replace("T", " ")
         name = ev.get("name", "?")[:cw_name]
         engine = ev.get("rag_engine", "?")[:cw_eng]
@@ -369,23 +364,27 @@ def _print_results(results):
         print(f"\n📈 Copertura RAGAS: {stats.get('riuscite', n)}/{stats.get('totali', n)} query valutate con successo"
               f" | {stats.get('fallite', 0)} fallite (NaN) | {stats.get('contesti_troncati', 0)} contesti protetti da troncamento")
 
-    # aggregate averages
-    avg_corr   = sum(r.get("correctness_voto",  0) for r in results) / n
-    avg_faith  = sum(r.get("faithfulness_voto",  0) for r in results) / n
-    avg_prec   = sum(r.get("retrieval_voto",     0) for r in results) / n
-    avg_recall = sum(r.get("recall_voto",        0) for r in results) / n
-    avg_rel    = sum(r.get("relevancy_voto",     0) for r in results) / n
-
+    # aggregate averages, only over the queries where RAGAS computed each metric
     print("\n📊 Medie Aggregate (5 Metriche RAGAS):")
-    print(f"  Answer Correctness:  {avg_corr:.4f}")
-    print(f"  Faithfulness:        {avg_faith:.4f}")
-    print(f"  Context Precision:   {avg_prec:.4f}")
-    print(f"  Context Recall:      {avg_recall:.4f}")
-    print(f"  Answer Relevancy:    {avg_rel:.4f}")
+    print(f"  Answer Correctness:  {_score(metric_mean(results, 'correctness_voto'))}")
+    print(f"  Faithfulness:        {_score(metric_mean(results, 'faithfulness_voto'))}")
+    print(f"  Context Precision:   {_score(metric_mean(results, 'retrieval_voto'))}")
+    print(f"  Context Recall:      {_score(metric_mean(results, 'recall_voto'))}")
+    print(f"  Answer Relevancy:    {_score(metric_mean(results, 'relevancy_voto'))}")
+
+    # verdict and error pattern distribution (same classification as the UI)
+    verdicts = Counter(r.get("verdict", "?") for r in results)
+    patterns = Counter(r.get("error_pattern", "?") for r in results if r.get("verdict") == "wrong")
+    partial_causes = Counter(r.get("error_cause") or "UNKNOWN" for r in results if r.get("verdict") == "partial")
+    print("\n⚖️  Verdetti: " + " | ".join(f"{v}: {c}" for v, c in verdicts.most_common()))
+    if patterns:
+        print("  Pattern di errore: " + ", ".join(f"{p}: {c}" for p, c in patterns.most_common()))
+    if partial_causes:
+        print("  Cause delle risposte parziali: " + ", ".join(f"{p}: {c}" for p, c in partial_causes.most_common()))
 
     # diagnostics
     print("\n🩺 Diagnostica Automatica:")
-    for line in generate_diagnostic(avg_prec, avg_faith, avg_corr):
+    for line in generate_diagnostic(results):
         print(f"  {line}")
 
     # per-benchmark breakdown
@@ -396,11 +395,9 @@ def _print_results(results):
     if len(bench_groups) > 1:
         print("\n📦 Dettaglio per Benchmark:")
         for src, group in sorted(bench_groups.items()):
-            bc = sum(r.get("correctness_voto", 0) for r in group) / len(group)
-            bf = sum(r.get("faithfulness_voto", 0) for r in group) / len(group)
-            bp = sum(r.get("retrieval_voto", 0) for r in group) / len(group)
-            br = sum(r.get("recall_voto", 0) for r in group) / len(group)
-            print(f"  {src:28s}  Corr={bc:.3f}  Faith={bf:.3f}  Prec={bp:.3f}  Recall={br:.3f}  ({len(group)} query)")
+            bc, bf, bp, br = (_score(metric_mean(group, k), digits=3)
+                              for k in ("correctness_voto", "faithfulness_voto", "retrieval_voto", "recall_voto"))
+            print(f"  {src:28s}  Corr={bc}  Faith={bf}  Prec={bp}  Recall={br}  ({len(group)} query)")
 
     # per-query table
     print("\n📋 Dettaglio per Query:")
@@ -415,11 +412,11 @@ def _print_results(results):
         status = "FALLITA" if r.get("ragas_fallita") else "OK"
         print(
             f"  {r.get('query_id', '?')[:16]:<16} {short_src:<14}"
-            f" {r.get('correctness_voto', 0):>{cw}.4f}"
-            f" {r.get('faithfulness_voto', 0):>{cw}.4f}"
-            f" {r.get('retrieval_voto', 0):>{cw}.4f}"
-            f" {r.get('recall_voto', 0):>{cw}.4f}"
-            f" {r.get('relevancy_voto', 0):>{cw}.4f}"
+            f" {_score(metric_value(r, 'correctness_voto'), cw)}"
+            f" {_score(metric_value(r, 'faithfulness_voto'), cw)}"
+            f" {_score(metric_value(r, 'retrieval_voto'), cw)}"
+            f" {_score(metric_value(r, 'recall_voto'), cw)}"
+            f" {_score(metric_value(r, 'relevancy_voto'), cw)}"
             f" {status:>7}"
         )
     print()
