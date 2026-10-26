@@ -383,6 +383,5 @@ SuperRagBench/
 ├── Benchmarks/                    # Dataset grezzi originali (non versionati, vedi "Scaricare i Benchmark")
 ├── valutazioni/                   # Report JSON archiviati con i risultati di ciascuna sessione
 ├── Paper/                         # Pubblicazioni scientifiche di riferimento sui dataset e su RAGAS
-├── recap_superbenchmark.md        # Sintesi tecnica approfondita dell'architettura
 └── aggiunta_dataset.md            # Guida dettagliata per integrare nuovi dataset
 ```
