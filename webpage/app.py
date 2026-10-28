@@ -7,9 +7,8 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from langchain_ollama import ChatOllama
 
-from evaluator import run_evaluation, parse_llm_endpoint_or_key, classify_query_verdict
+from evaluator import run_evaluation, build_judge_llm, classify_query_verdict
 from taxonomy import metric_mean, metric_value, needs_reclassification
 from persistence import save_evaluation, list_evaluations, load_evaluation, delete_evaluation
 from benchmark_download import build_benchmarks_zip
@@ -70,31 +69,7 @@ def _load_benchmark_jsonl(path, skip_context=True):
 def invoke_ollama(prompt: str, ollama_url: str, model: str, llm_api_key: str = "") -> str:
     """Call Ollama via langchain_ollama and return the response as a string."""
     try:
-        base_url, client_kwargs = parse_llm_endpoint_or_key(ollama_url, api_key=llm_api_key)
-        
-        # Determine if we should use ChatOpenAI or ChatOllama based on the URL or API Key
-        # If it's a known OpenAI endpoint or an API Key is provided, use ChatOpenAI
-        is_openai = "openai" in base_url.lower() or bool(llm_api_key)
-        if not is_openai and ("v1" in base_url or "azure" in base_url.lower()):
-            is_openai = True
-            
-        if is_openai:
-            from langchain_openai import ChatOpenAI
-            llm = ChatOpenAI(
-                model=model,
-                base_url=base_url if base_url and "localhost" not in base_url else None,
-                api_key=llm_api_key or "sk-no-key",
-                temperature=0,
-            )
-        else:
-            from langchain_ollama import ChatOllama
-            llm = ChatOllama(
-                model=model,
-                base_url=base_url,
-                temperature=0,
-                **({"client_kwargs": client_kwargs} if client_kwargs else {})
-            )
-            
+        llm, _ = build_judge_llm(ollama_url, model, llm_api_key)
         return llm.invoke(prompt).content
     except Exception as exc:
         st.error(f"LLM request failed: {exc}")

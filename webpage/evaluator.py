@@ -1,11 +1,13 @@
 import json
 import math
+import re
 import logging
 import requests
 import nest_asyncio
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from langchain_core.callbacks.base import BaseCallbackHandler
 # error classification rules live in taxonomy.py (re-exported for app.py)
@@ -123,30 +125,60 @@ def _get_embedding_model():
         _embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
     return _embedding_model
 
+# Ollama native API paths: stripped from the judge URL, ChatOllama wants the bare host
+_OLLAMA_API_PATH = re.compile(r"/api(/(chat|generate|tags|embed|embeddings))?/?$")
+
+def _normalize_llm_url(url: str) -> str:
+    """Full URL of the judge endpoint: adds http:// when missing and drops an Ollama
+    /api/... path, keeping any other path (e.g. /v1 of an OpenAI-compatible server)."""
+    parsed = urlparse(url if "://" in url else f"http://{url}")
+    path = _OLLAMA_API_PATH.sub("", parsed.path).rstrip("/")
+    return f"{parsed.scheme}://{parsed.netloc}{path}"
+
 def parse_llm_endpoint_or_key(endpoint_or_key: str, default_base_url: str = "http://localhost:11434", api_key: str = "") -> tuple[str, dict]:
     """
     Parses an LLM Judge endpoint or API key input.
+    Returns (base_url, client_kwargs); base_url is "" when only an API key is given,
+    meaning the official OpenAI endpoint.
     """
     val = (endpoint_or_key or "").strip()
-    
+
     # If API key is provided directly as an argument, use the URL as base_url
     if api_key:
-        base_url = val if val else default_base_url
-        if base_url.endswith("/api"): base_url = base_url[:-4]
         auth_header = api_key if api_key.lower().startswith("bearer ") else f"Bearer {api_key}"
-        return base_url, {"headers": {"Authorization": auth_header}}
-        
+        return (_normalize_llm_url(val) if val else ""), {"headers": {"Authorization": auth_header}}
+
     if not val:
         return default_base_url, {}
-    if val.startswith("http://") or val.startswith("https://"):
-        base_url = val.split("/api")[0]
-        return base_url, {}
-    if val.startswith("localhost") or val.startswith("127.0.0.1"):
-        base_url = f"http://{val}".split("/api")[0]
-        return base_url, {}
+    if "://" in val or val.startswith(("localhost", "127.0.0.1")):
+        return _normalize_llm_url(val), {}
     # Otherwise treat as API key
     auth_header = val if val.lower().startswith("bearer ") else f"Bearer {val}"
     return default_base_url, {"headers": {"Authorization": auth_header}}
+
+def build_judge_llm(endpoint: str, model: str, api_key: str = "", callbacks=None):
+    """LangChain chat model for the judge, shared by RAGAS and the dashboard's expert report.
+    OpenAI-compatible (ChatOpenAI) with an API key or a /v1, openai or azure URL,
+    otherwise Ollama. Returns (llm, is_openai)."""
+    base_url, client_kwargs = parse_llm_endpoint_or_key(endpoint, api_key=api_key)
+    is_openai = bool(api_key) or "openai" in base_url.lower() or "azure" in base_url.lower()         or "/v1" in urlparse(base_url).path
+    if is_openai:
+        from langchain_openai import ChatOpenAI
+        # always the configured URL: None would send a local server's calls to api.openai.com
+        return ChatOpenAI(
+            model=model,
+            base_url=base_url or None,
+            api_key=api_key or "sk-no-key",
+            temperature=0,
+            callbacks=callbacks,
+        ), True
+    return ChatOllama(
+        model=model,
+        base_url=base_url,
+        temperature=0,
+        callbacks=callbacks,
+        **({"client_kwargs": client_kwargs} if client_kwargs else {})
+    ), False
 
 def truncate_text(text, max_chars):
     """Truncates the text respecting sentence boundaries (. ! ?) or, alternatively,
@@ -520,31 +552,8 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, l
 
     if progress_callback: progress_callback("ragas", 0, 1, "Computing RAGAS metrics...")
 
-    base_url, client_kwargs = parse_llm_endpoint_or_key(ollama_url, api_key=llm_api_key)
-    is_openai = "openai" in base_url.lower() or bool(llm_api_key)
-    if not is_openai and ("v1" in base_url or "azure" in base_url.lower()):
-        is_openai = True
-        
     callbacks = [TPSCallbackHandler(tps_callback)] if tps_callback else []
-        
-    if is_openai:
-        from langchain_openai import ChatOpenAI
-        ragas_llm = ChatOpenAI(
-            model=ollama_model,
-            base_url=base_url if base_url and "localhost" not in base_url else None,
-            api_key=llm_api_key or "sk-no-key",
-            temperature=0,
-            callbacks=callbacks
-        )
-    else:
-        from langchain_ollama import ChatOllama
-        ragas_llm = ChatOllama(
-            model=ollama_model,
-            base_url=base_url,
-            temperature=0,
-            callbacks=callbacks,
-            **({"client_kwargs": client_kwargs} if client_kwargs else {})
-        )
+    ragas_llm, is_openai = build_judge_llm(ollama_url, ollama_model, llm_api_key, callbacks)
 
     ragas_embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
 

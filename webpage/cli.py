@@ -80,7 +80,7 @@ def normalize_rag_engine(val: str) -> str:
 def normalize_selection_mode(val: str) -> str:
     """Normalize selection mode."""
     v = val.strip().upper()
-    if v in ["P", "REPEAT", "REPEAT PREVIOUS"]:
+    if v in ["P", "PREVIOUS", "REPEAT", "REPEAT PREVIOUS"]:
         return "Repeat Previous"
     if v in ["F", "FIXED"]:
         return "Fixed"
