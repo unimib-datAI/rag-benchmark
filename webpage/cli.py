@@ -16,7 +16,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 try:
-    from evaluator import run_evaluation
+    from evaluator import run_evaluation, FETCH_K
     from persistence import save_evaluation, list_evaluations, load_evaluation, EVAL_DIR
     from taxonomy import diagnosis_messages, metric_mean, metric_value
 except ImportError as e:
@@ -262,8 +262,10 @@ def _load_repeat_ids():
     return {r["query_id"] for r in latest.get("results", []) if "query_id" in r}
 
 
-def _load_dataset(benchmarks, sample_size, selection_mode):
-    """Load queries from the jsonl files of the selected benchmarks."""
+def _load_dataset(benchmarks, sample_size, selection_mode, seed):
+    """Load queries from the jsonl files of the selected benchmarks.
+    The Random selection uses its own generator seeded with `seed`, so a run can be repeated."""
+    rng = random.Random(seed)
     repeat_ids = None
     if selection_mode == "Repeat Previous":
         repeat_ids = _load_repeat_ids()
@@ -306,7 +308,7 @@ def _load_dataset(benchmarks, sample_size, selection_mode):
 
             conv_keys = list(conversations.keys())
             if selection_mode == "Random":
-                random.shuffle(conv_keys)
+                rng.shuffle(conv_keys)
             else:
                 conv_keys.sort()
 
@@ -321,7 +323,7 @@ def _load_dataset(benchmarks, sample_size, selection_mode):
         else:
             sz = min(sample_size, len(items))
             if selection_mode == "Random":
-                dataset.extend(random.sample(items, sz))
+                dataset.extend(rng.sample(items, sz))
             else:
                 dataset.extend(items[:sz])
 
@@ -451,6 +453,10 @@ def _print_results(results):
 
 # ── argument parser ────────────────────────────────────────────────
 
+# the CLI always computes all five RAGAS metrics
+CLI_METRICS = ["faithfulness", "answer_relevancy", "context_precision", "answer_correctness", "context_recall"]
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         description="SuperRagBench — Interfaccia CLI per la Valutazione di Sistemi RAG",
@@ -477,6 +483,7 @@ def build_parser():
     parser.add_argument("--sample", type=int, default=None, help="Numero di query per benchmark")
     parser.add_argument("--mode", type=str, choices=["Random", "Fixed", "Repeat", "random", "fixed", "repeat"], default=None, help="Modalità campionamento query")
     parser.add_argument("--workers", type=int, default=None, help="Worker paralleli RAGAS (1-10, default: 2)")
+    parser.add_argument("--seed", type=int, default=None, help="Seed del campionamento Random (default: casuale, salvato nella valutazione)")
     parser.add_argument("--no-ingest", action="store_true", help="Salta l'ingestion preliminare del corpus nel RAG")
     parser.add_argument("--list", action="store_true", help="Mostra l'elenco delle valutazioni salvate ed esce")
     parser.add_argument("--interactive", action="store_true", help="Forza l'apertura del menù interattivo")
@@ -540,9 +547,10 @@ def main():
         print(f"  Motore: {rag_engine} ({endpoint}) | Soglia: {threshold} | Judge: {model} ({ollama_url})")
         print(f"  Benchmark: {', '.join(benchmarks)} | Campioni/Bench: {sample_size} | Mode: {selection_mode} | Workers: {max_workers}\n")
 
-    # Caricamento del dataset
-    print("📂 Caricamento del dataset di benchmark...")
-    dataset, files_to_run = _load_dataset(benchmarks, sample_size, selection_mode)
+    # Caricamento del dataset (seed salvato nella valutazione per poter ripetere il campionamento)
+    seed = args.seed if args.seed is not None else random.randrange(2**32)
+    print(f"📂 Caricamento del dataset di benchmark... (seed {seed})")
+    dataset, files_to_run = _load_dataset(benchmarks, sample_size, selection_mode, seed)
 
     if not dataset:
         print("\n❌ Errore: nessun dato caricato. Verifica la presenza dei file nella cartella Run/.")
@@ -564,8 +572,7 @@ def main():
             tps_callback=_tps_callback,
             motore_rag=rag_engine,
             benchmark_files=None if skip_ingest else files_to_run,
-            selected_metrics=["faithfulness", "answer_relevancy", "context_precision",
-                              "answer_correctness", "context_recall"],
+            selected_metrics=CLI_METRICS,
             max_workers=max_workers,
         )
     except ConnectionError as e:
@@ -602,6 +609,13 @@ def main():
             benchmarks_used=benchmarks,
             rag_engine=rag_engine,
             name=eval_name,
+            config={
+                "selection_mode": selection_mode,
+                "seed": seed,
+                "metrics": CLI_METRICS,
+                "fetch_k": FETCH_K,
+                "max_workers": max_workers,
+            },
         )
         saved_file = eval_data.get("filepath")
         if saved_file and Path(saved_file).exists():

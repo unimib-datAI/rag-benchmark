@@ -21,8 +21,10 @@ AGGREGATE_KEYS = {
 
 def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: float,
                     sample_size: int, benchmarks_used: list[str], rag_engine: str = "Unknown",
-                    name: str = "") -> dict:
-    """Saves the evaluation results to a JSON file."""
+                    name: str = "", config: dict | None = None) -> dict:
+    """Saves the evaluation results to a JSON file.
+    config holds the run parameters needed to reproduce it (sampling seed and mode,
+    RAGAS metrics, fetch_k, workers)."""
     import re
     eval_id = str(uuid.uuid4())[:8]
     timestamp = datetime.now()
@@ -70,6 +72,7 @@ def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: f
         "sample_size": sample_size,
         "benchmarks_used": benchmarks_used,
         "rag_engine": rag_engine,
+        "config": config or {},
         "aggregate": aggregate,
         "per_benchmark": per_benchmark,
         "error_patterns": error_patterns,
@@ -99,6 +102,7 @@ def list_evaluations() -> list[dict]:
                 "sample_size": data.get("sample_size", 0),
                 "benchmarks_used": data.get("benchmarks_used", []),
                 "rag_engine": data.get("rag_engine", "Unknown"),
+                "config": data.get("config", {}),
                 "aggregate": data.get("aggregate", {}),
                 "per_benchmark": data.get("per_benchmark", {}),
                 "error_patterns": data.get("error_patterns", {}),

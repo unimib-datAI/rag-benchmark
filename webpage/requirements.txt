@@ -1,11 +1,2 @@
-streamlit
-pandas
-requests
-sentence-transformers
-ragas
-langchain-ollama
-langchain-huggingface
-datasets
-nest-asyncio
-plotly
-numpy
+# Same dependencies as the project root
+-r ../requirements.txt

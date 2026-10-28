@@ -114,6 +114,7 @@ class RagError(RuntimeError):
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
 MAX_CONTEXT_CHARS = 180_000
+FETCH_K = 10  # documents requested from the RAG for each query, before the semantic filter
 _embedding_model = None
 sys.path.append(str(ROOT_DIR))
 # benchmark corpora shared with ingest_dave.py, so both RAG engines index the same documents
@@ -438,7 +439,7 @@ def process_single_query(item, motore_rag, dave_client, dave_collections, ask_en
         sent_question = raw_question
 
     # Same top_k for both engines: fixed and high (e.g. 10)
-    fetch_k = 10
+    fetch_k = FETCH_K
 
     # Rule shared by both engines: retrieve -> threshold filter -> the answer is generated on
     # exactly the filtered documents, which are the retrieved_contexts given to RAGAS

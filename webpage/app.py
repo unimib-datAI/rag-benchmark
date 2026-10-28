@@ -1,5 +1,6 @@
 import json
 import random
+from html import escape
 import pandas as pd
 import streamlit as st
 
@@ -8,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-from evaluator import run_evaluation, build_judge_llm, classify_query_verdict
+from evaluator import run_evaluation, build_judge_llm, classify_query_verdict, FETCH_K
 from taxonomy import metric_mean, metric_value, needs_reclassification
 from persistence import save_evaluation, list_evaluations, load_evaluation, delete_evaluation
 from benchmark_download import build_benchmarks_zip
@@ -271,6 +272,10 @@ with tab_evaluation:
                 st.warning("No previous evaluation found. Falling back to Fixed selection.")
                 st.session_state.query_selection_mode = "Fixed"
 
+        # seeded sampling: the seed is saved with the evaluation, so the Random selection can be reproduced
+        sampling_seed = random.randrange(2**32)
+        rng = random.Random(sampling_seed)
+
         # datasets are loaded from the selected files in the sidebar
         dataset_items = []
         files_to_run = st.session_state.get("selected_files", list(BENCHMARK_MAPPING.values()))
@@ -295,7 +300,7 @@ with tab_evaluation:
                     turns_needed = st.session_state.get("sample_size_param", 3)
                     conv_keys = list(conversations.keys())
                     if st.session_state.get("query_selection_mode", "Random") == "Random":
-                        random.shuffle(conv_keys)
+                        rng.shuffle(conv_keys)
                     else:
                         conv_keys.sort()
 
@@ -309,7 +314,7 @@ with tab_evaluation:
                 else:
                     size = min(st.session_state.get("sample_size_param", 3), len(elements))
                     if st.session_state.get("query_selection_mode", "Random") == "Random":
-                        dataset_items.extend(random.sample(elements, size))
+                        dataset_items.extend(rng.sample(elements, size))
                     else:
                         dataset_items.extend(elements[:size])
 
@@ -377,6 +382,13 @@ with tab_evaluation:
                 benchmarks_used=files_to_run,
                 rag_engine=motore_rag,
                 name=st.session_state.get('eval_name', ''),
+                config={
+                    "selection_mode": st.session_state.get("query_selection_mode", "Random"),
+                    "seed": sampling_seed,
+                    "metrics": selected_metrics,
+                    "fetch_k": FETCH_K,
+                    "max_workers": max_workers_param,
+                },
             )
             st.session_state.last_saved_id = saved['id']
             st.session_state.current_eval_name = saved['name']
@@ -399,7 +411,7 @@ with tab_evaluation:
         # metrics overview (4 RAGAS metrics)
         curr_name = st.session_state.get("current_eval_name", "")
         if curr_name:
-            st.markdown(f'<div class="section-title">Overview &mdash; <span style="color: #a29bfe; font-size: 1.1rem; text-transform: none; margin-left: 8px;">{curr_name}</span></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="section-title">Overview &mdash; <span style="color: #a29bfe; font-size: 1.1rem; text-transform: none; margin-left: 8px;">{escape(curr_name)}</span></div>', unsafe_allow_html=True)
         else:
             st.markdown('<div class="section-title">Overview (Ragas Metrics)</div>', unsafe_allow_html=True)
         col1, col2, col3, col4 = st.columns(4)
@@ -649,7 +661,8 @@ Keep the language clear, concise and directly actionable. Total length under 300
         llm_advice_text = st.session_state.get("llm_advice", "")
 
         if llm_advice_text:
-            st.markdown(f'<div class="expert-report-card">{llm_advice_text}</div>', unsafe_allow_html=True)
+            # LLM output is untrusted (it echoes benchmark documents): escape any HTML, the Markdown still renders
+            st.markdown(f'<div class="expert-report-card">{escape(llm_advice_text, quote=False)}</div>', unsafe_allow_html=True)
         else:
             st.info("Expert analysis not available. Make sure the LLM Judge is accessible.")
 
@@ -691,12 +704,12 @@ with tab_explore:
             card_html = (
                 f'<div class="eval-card">'
                 f'  <div class="eval-card-header">'
-                f'    <span class="eval-card-name">{ev["name"]}</span>'
+                f'    <span class="eval-card-name">{escape(ev["name"])}</span>'
                 f'    <span class="eval-card-ts">{ts}</span>'
                 f'  </div>'
                 f'  <div class="eval-card-body">'
-                f'    <span class="eval-card-detail">RAG: <strong>{ev.get("rag_engine", "Unknown")}</strong></span>'
-                f'    <span class="eval-card-detail">Model: <strong>{ev.get("model", "Unknown")}</strong></span>'
+                f'    <span class="eval-card-detail">RAG: <strong>{escape(str(ev.get("rag_engine", "Unknown")))}</strong></span>'
+                f'    <span class="eval-card-detail">Model: <strong>{escape(str(ev.get("model", "Unknown")))}</strong></span>'
                 f'    <span class="eval-card-detail">Queries: <strong style="font-family:JetBrains Mono,monospace">{ev["num_queries"]}</strong></span>'
                 f'    <span class="eval-card-detail">Correctness: <strong style="color:{color_hex};font-family:JetBrains Mono,monospace">{_fmt_score(avg_corr)}</strong></span>'
                 f'  </div>'
@@ -1020,9 +1033,9 @@ with tab_explore:
                 f'    <span class="eval-best-badge">{_fmt_score(best_score)}</span>'
                 '  </div>'
                 '  <div class="eval-card-body">'
-                f'    <span class="eval-card-detail"><strong>{best_ev["name"]}</strong></span>'
-                f'    <span class="eval-card-detail">RAG: {best_ev.get("rag_engine", "?")}</span>'
-                f'    <span class="eval-card-detail">Model: {best_ev["model"]}</span>'
+                f'    <span class="eval-card-detail"><strong>{escape(best_ev["name"])}</strong></span>'
+                f'    <span class="eval-card-detail">RAG: {escape(str(best_ev.get("rag_engine", "?")))}</span>'
+                f'    <span class="eval-card-detail">Model: {escape(str(best_ev["model"]))}</span>'
                 f'    <span class="eval-card-detail">{best_ts}</span>'
                 '  </div>'
                 '</div>'

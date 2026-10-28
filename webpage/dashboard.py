@@ -1,4 +1,5 @@
 from collections import Counter
+from html import escape
 
 from taxonomy import THRESHOLDS, diagnosis_messages
 
@@ -24,7 +25,7 @@ def get_metric_card_html(label: str, val: float, color_class: str) -> str:
     # the CSS color class is passed from app.py (e.g. "green", "red" etc.)
     return f"""
     <div class="metric-card">
-        <div class="label">{label}</div>
+        <div class="label">{escape(label)}</div>
         <div class="value {color_class}">{"N/A" if val is None else f"{val:.2f}"}</div>
     </div>"""
 
@@ -33,7 +34,7 @@ def get_breakdown_card_html(src_name: str, score: float, count: int, color_class
     # the "c-" prefix on the color class avoids conflicts with the classes above
     return f"""
     <div class="breakdown-card">
-        <div class="src-name">{src_name}</div>
+        <div class="src-name">{escape(src_name)}</div>
         <div class="src-score c-{color_class}">{"N/A" if score is None else f"{score:.2f}"}</div>
         <div class="src-count">{count} queries</div>
     </div>"""
@@ -41,9 +42,9 @@ def get_breakdown_card_html(src_name: str, score: float, count: int, color_class
 def get_judge_box_html(metric_label: str, v: float, reason: str, color_class: str) -> str:
     return f"""
     <div class="judge-box">
-        <div class="jb-label">{metric_label}</div>
-        <div class="jb-value c-{color_class}">{v}</div>
-        <div class="jb-reason">{reason}</div>
+        <div class="jb-label">{escape(metric_label)}</div>
+        <div class="jb-value c-{color_class}">{escape(str(v))}</div>
+        <div class="jb-reason">{escape(reason)}</div>
     </div>"""
 
 
@@ -51,16 +52,16 @@ def get_diagnostics_html(reports: list):
     # built from the per-query patterns, so it can't contradict the verdicts
     html_issues = '<div class="diag-panel issues" style="height: 100%;"><h3>🔍 Advanced Heuristic Analysis</h3>'
     for title, text in diagnosis_messages(reports):
-        html_issues += f'<p><b>{title}:</b> {text}</p>'
+        html_issues += f'<p><b>{escape(title)}:</b> {escape(text)}</p>'
     html_issues += '</div>'
 
     return html_issues
 
 def get_footer_html(num_reports: int, ollama_model: str, time_str: str, eval_name: str = "") -> str:
-    name_prefix = f"{eval_name}  &middot;  " if eval_name else ""
+    name_prefix = f"{escape(eval_name)}  &middot;  " if eval_name else ""
     return f"""
 <div class="footer-bar">
-    {name_prefix}SuperBenchmark  &middot;  {num_reports} queries  &middot;  Judge: {ollama_model}  &middot;  {time_str}
+    {name_prefix}SuperBenchmark  &middot;  {num_reports} queries  &middot;  Judge: {escape(ollama_model)}  &middot;  {escape(time_str)}
 </div>"""
 
 
@@ -73,15 +74,15 @@ def get_verdict_html(verdict: str, verdict_label: str, pattern_label: str, reaso
         'not_evaluated': ('#94A3B8', 'rgba(148, 163, 184, 0.06)', 'rgba(148, 163, 184, 0.20)'),
     }
     color, bg, border = color_map.get(verdict, color_map['wrong'])
-    pattern_html = f' — {pattern_label}' if verdict != 'correct' else ''
+    pattern_html = f' — {escape(pattern_label)}' if verdict != 'correct' else ''
 
     return f"""
     <div class="verdict-card" style="background:{bg}; border:1px solid {border}; border-left:4px solid {color};">
         <div class="verdict-header">
             <span class="verdict-title">⚖️ Query Verdict</span>
-            <span class="verdict-badge" style="color:{color}; border-color:{color};">{verdict_label}{pattern_html}</span>
+            <span class="verdict-badge" style="color:{color}; border-color:{color};">{escape(verdict_label)}{pattern_html}</span>
         </div>
-        <div class="verdict-reason">{reason}</div>
+        <div class="verdict-reason">{escape(reason)}</div>
     </div>"""
 
 
@@ -135,8 +136,8 @@ def get_verdict_summary_html(reports: list) -> str:
     pct_n = (not_eval / total * 100) if total else 0
 
     # Build error-pattern breakdown (wrong answers) and causes of partial answers
-    error_patterns_html = "".join(f'<span class="vp-tag vp-tag-red">{p}: {c}</span>' for p, c in pattern_counts.most_common())
-    partial_causes_html = "".join(f'<span class="vp-tag vp-tag-yellow">{p}: {c}</span>' for p, c in partial_causes.most_common())
+    error_patterns_html = "".join(f'<span class="vp-tag vp-tag-red">{escape(p)}: {c}</span>' for p, c in pattern_counts.most_common())
+    partial_causes_html = "".join(f'<span class="vp-tag vp-tag-yellow">{escape(p)}: {c}</span>' for p, c in partial_causes.most_common())
 
     if not error_patterns_html and wrong == 0:
         error_patterns_html = '<span class="vp-tag vp-tag-green">No errors detected</span>'

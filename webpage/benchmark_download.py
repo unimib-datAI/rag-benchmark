@@ -75,6 +75,15 @@ def _entry(name):
     return info
 
 
+def _safe_member_name(name):
+    """Member path of a downloaded zip, or "" if it could escape Benchmarks/ when the
+    final archive is extracted (zip slip: ".." segments, absolute or drive paths)."""
+    parts = name.replace("\\", "/").split("/")
+    if ".." in parts or name.startswith(("/", "\\")) or (parts and ":" in parts[0]):
+        return ""
+    return "/".join(p for p in parts if p not in ("", "."))
+
+
 def _add_to_zip(zf, src, dest, kind, only=None):
     if kind == "file":
         # already compressed files (.bz2) are stored, the others deflated
@@ -86,7 +95,7 @@ def _add_to_zip(zf, src, dest, kind, only=None):
     elif kind == "unzip":
         with zipfile.ZipFile(src) as inner:
             for member in inner.infolist():
-                name = member.filename.lstrip("/")
+                name = _safe_member_name(member.filename)
                 if member.is_dir() or not name or name.startswith("__MACOSX"):
                     continue
                 if only and not name.startswith(only):
