@@ -1,0 +1,31 @@
+# docker compose up --build        (then open http://localhost:8501)
+# Everything that changes lives in local folders, so the container can be rebuilt freely:
+#   ./state       config.json (DAVE settings), .dave_collections.json, .dave_docs_cache.json
+#   ./Run         benchmark query files + extract_*.py scripts
+#   ./Benchmarks  raw benchmarks (Download Benchmark button)
+#   ./valutazioni saved evaluations
+#   ./hf_cache    downloaded sentence-transformers models
+services:
+  app:
+    build: .
+    image: superbenchmark
+    # same uid as the host user, so the files in the mounted folders stay yours
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      - "${APP_PORT:-8501}:8501"   # nginx proxies to 127.0.0.1:8501
+    env_file:
+      - path: .env                 # DAVE_* credentials (optional)
+        required: false
+    environment:
+      STATE_DIR: /app/state
+      HF_HOME: /app/hf_cache
+      HOME: /tmp
+    volumes:
+      - ./state:/app/state
+      - ./Run:/app/Run
+      - ./Benchmarks:/app/Benchmarks
+      - ./valutazioni:/app/valutazioni
+      - ./hf_cache:/app/hf_cache
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reach an Ollama running on the host
+    restart: unless-stopped

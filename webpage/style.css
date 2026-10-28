@@ -474,7 +474,7 @@ button[kind="primary"]:active {
 }
 
 /* ── Expert Report Card (Clean & Minimal) ── */
-.expert-report-card {
+:is(.expert-report-card, .st-key-expert_report) {
     background: rgba(22, 22, 32, 0.7);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
@@ -489,7 +489,7 @@ button[kind="primary"]:active {
     line-height: 1.65;
 }
 
-.expert-report-card h2, .expert-report-card h3 {
+:is(.expert-report-card, .st-key-expert_report) h2, :is(.expert-report-card, .st-key-expert_report) h3 {
     color: #f1f5f9;
     font-weight: 700;
     margin-top: 1.2rem;
@@ -499,28 +499,28 @@ button[kind="primary"]:active {
     font-size: 1.15rem;
 }
 
-.expert-report-card h2:first-child, .expert-report-card h3:first-child {
+:is(.expert-report-card, .st-key-expert_report) h2:first-child, :is(.expert-report-card, .st-key-expert_report) h3:first-child {
     margin-top: 0;
 }
 
-.expert-report-card p {
+:is(.expert-report-card, .st-key-expert_report) p {
     color: #cbd5e1;
     font-size: 0.95rem;
     margin-bottom: 0.8rem;
 }
 
-.expert-report-card ul {
+:is(.expert-report-card, .st-key-expert_report) ul {
     margin-left: 1.2rem;
     margin-bottom: 0.8rem;
     color: #cbd5e1;
 }
 
-.expert-report-card li {
+:is(.expert-report-card, .st-key-expert_report) li {
     margin-bottom: 0.35rem;
     font-size: 0.95rem;
 }
 
-.expert-report-card strong {
+:is(.expert-report-card, .st-key-expert_report) strong {
     color: #ffffff;
 }
 
