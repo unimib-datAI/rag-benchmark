@@ -1,4 +1,3 @@
-import re
 import json
 import math
 import logging
@@ -6,7 +5,6 @@ import requests
 import nest_asyncio
 import sys
 import time
-from collections import defaultdict
 from pathlib import Path
 
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -89,8 +87,6 @@ class TPSCallbackHandler(BaseCallbackHandler):
                     pass
             self.last_update = now
 
-from bs4 import BeautifulSoup
-
 nest_asyncio.apply()
 
 from ragas import evaluate, RunConfig
@@ -108,24 +104,24 @@ from sentence_transformers import SentenceTransformer, util as st_util
 
 logger = logging.getLogger("evaluator")
 
+
+class RagError(RuntimeError):
+    """The RAG under test failed to answer (HTTP error, empty answer, exception):
+    the query is an infrastructure failure, not an answer to evaluate."""
+
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
 MAX_CONTEXT_CHARS = 180_000
 _embedding_model = None
 sys.path.append(str(ROOT_DIR))
+# benchmark corpora shared with ingest_dave.py, so both RAG engines index the same documents
+from corpus_sources import Corpus, benchmark_source, DAVE_COLLECTIONS
 
 def _get_embedding_model():
     global _embedding_model
     if _embedding_model is None:
         _embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
     return _embedding_model
-
-def clean_html_text(text):
-    """Clean HTML tags and entities using BeautifulSoup."""
-    if not text or ("<" not in text and "&" not in text):
-        return text
-    soup = BeautifulSoup(text, 'html.parser')
-    return soup.get_text()
 
 def parse_llm_endpoint_or_key(endpoint_or_key: str, default_base_url: str = "http://localhost:11434", api_key: str = "") -> tuple[str, dict]:
     """
@@ -151,25 +147,6 @@ def parse_llm_endpoint_or_key(endpoint_or_key: str, default_base_url: str = "htt
     # Otherwise treat as API key
     auth_header = val if val.lower().startswith("bearer ") else f"Bearer {val}"
     return default_base_url, {"headers": {"Authorization": auth_header}}
-    return BeautifulSoup(text, "html.parser").get_text(separator=" ", strip=True)
-
-def split_context_in_docs(context):
-    if isinstance(context, list):
-        return [clean_html_text(str(c)) for c in context if str(c).strip()]
-    text = str(context or "").strip()
-    if not text: return []
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines: return [clean_html_text(text)]
-
-    docs, current = [], []
-    for line in lines:
-        if line.startswith("[Doc ") or line.startswith("[Fonte:") or line.startswith("[Documento "):
-            if current:
-                docs.append(" ".join(current).strip())
-                current = []
-        current.append(line)
-    if current: docs.append(" ".join(current).strip())
-    return [clean_html_text(doc) for doc in docs]
 
 def truncate_text(text, max_chars):
     """Truncates the text respecting sentence boundaries (. ! ?) or, alternatively,
@@ -256,11 +233,40 @@ def format_retrieved(docs):
     return "".join(f"[Doc {i}]\n{_extract_doc_text(d)}\n\n" for i, d in enumerate(docs, 1))
 
 # RAG ENGINES
+
+INGEST_BATCH_DOCS = 500
+INGEST_BATCH_BYTES = 20 * 1024 * 1024
+
+def _missing_doc_ids(ingest_endpoint, source, doc_ids):
+    """Asks /ingest (check_only) which corpus documents the RAG does not hold yet.
+    Returns the set of missing ids; a RAG that does not support check_only (error or
+    no "complete"/"missing" field) gets the whole corpus."""
+    try:
+        r = requests.post(ingest_endpoint, json={
+            "benchmark_name": source, "check_only": True,
+            "expected_count": len(doc_ids), "ids": doc_ids,
+        }, timeout=120)
+        data = r.json() if r.status_code == 200 else {}
+    except Exception as e:
+        logger.warning("Ingestion check failed for '%s': %s", source, e)
+        data = {}
+    if data.get("complete") is True:
+        return set()
+    if isinstance(data.get("missing"), list):
+        return set(map(str, data["missing"])) & set(doc_ids)
+    return set(doc_ids)
+
 def ingest_corpus_to_rag(benchmark_files, run_dir, rag_base_url, progress_callback=None):
-    """Loads ALL benchmark documents into the RAG server via /ingest.
-    Works with any RAG system that exposes a POST /ingest endpoint.
-    If the endpoint does not exist or fails, logs a warning and continues."""
+    """Loads the benchmark corpus into the RAG server via POST /ingest.
+    First asks /ingest (check_only, with the corpus ids) which documents the RAG is
+    missing: if none the benchmark is skipped, otherwise only the missing documents are
+    sent in batches and the RAG's /ingest must add them to the existing index.
+    If the check_only request fails the RAG gets the whole corpus; if sending the
+    documents fails (HTTP != 200 or exception) raises RuntimeError, so the evaluation
+    never runs on an incomplete index.
+    Returns the seconds spent on each benchmark (check plus upload), keyed by source."""
     ingest_endpoint = rag_base_url.rstrip("/") + "/ingest"
+    timings = {}
 
     total_files = len(benchmark_files)
     for idx, file_name in enumerate(benchmark_files):
@@ -269,60 +275,63 @@ def ingest_corpus_to_rag(benchmark_files, run_dir, rag_base_url, progress_callba
             logger.warning("Benchmark file not found: %s", path)
             continue
 
-        # Load ALL elements from the benchmark file (.jsonl or .json)
-        all_items = []
-        with open(path, "r", encoding="utf-8-sig") as f:
-            if str(path).endswith(".jsonl"):
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        all_items.append(json.loads(line))
-            else:
-                all_items = json.load(f)
+        start = time.perf_counter()
+        source = benchmark_source(path)
+        corpus = Corpus(source)
+        missing = corpus.missing_paths()
+        if missing:
+            raise RuntimeError(
+                f"Corpus for '{source}' not found: {', '.join(str(p) for p in missing)}. "
+                "Download the benchmarks with the 'Download Benchmark' button and extract them into Benchmarks/."
+            )
 
-        # Identify the source from the first element
-        source = all_items[0].get("source", "default") if all_items else "default"
-
-        # Extract and deduplicate context documents
-        unique_docs = {}
-        for item in all_items:
-            context = item.get("context", "")
-            if not context or not str(context).strip():
-                continue
-            doc_texts = split_context_in_docs(context)
-            for doc_text in doc_texts:
-                stripped = doc_text.strip()
-                if stripped:
-                    content_hash = hash(stripped[:500])
-                    if content_hash not in unique_docs:
-                        unique_docs[content_hash] = stripped
-
-        if not unique_docs:
-            logger.warning("No documents found in %s", file_name)
-            continue
-
-        doc_list = [{"id": f"{source}_doc{i}", "text": v} for i, v in enumerate(unique_docs.values())]
-
-        logger.info("Ingestion: sending %d unique documents for benchmark '%s' (from %d total queries)",
-                     len(doc_list), source, len(all_items))
         if progress_callback:
-            progress_callback("ingest", idx, total_files,
-                              f"Loading corpus into RAG: {source} ({len(doc_list)} unique docs from {len(all_items)} queries)...")
+            progress_callback("ingest", idx, total_files, f"Checking whether the RAG already holds the {source} corpus...")
+        doc_ids = corpus.ids()
+        missing_ids = _missing_doc_ids(ingest_endpoint, source, doc_ids)
+        if not missing_ids:
+            logger.info("Ingestion skipped for '%s': the RAG already holds all %d documents", source, len(doc_ids))
+            if progress_callback:
+                progress_callback("ingest", idx, total_files, f"Corpus {source} already in the RAG, skipping ingestion.")
+            timings[source] = time.perf_counter() - start
+            continue
+        to_send = len(missing_ids)
 
+        def _send(batch):
+            r = requests.post(ingest_endpoint, json={"benchmark_name": source, "documents": batch}, timeout=300)
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}".rstrip(": "))
+
+        sent = 0
+        batch, batch_bytes = [], 0
         try:
-            r = requests.post(ingest_endpoint, json={
-                "benchmark_name": source,
-                "documents": doc_list
-            }, timeout=300)
-            if r.status_code == 200:
-                logger.info("Ingestion OK for '%s': %s", source, r.json().get("message", ""))
-            else:
-                logger.warning("Ingestion failed for '%s': HTTP %d", source, r.status_code)
+            for doc_id, text in corpus.docs(include=missing_ids):
+                batch.append({"id": doc_id, "text": text})
+                batch_bytes += len(text.encode("utf-8"))
+                if len(batch) >= INGEST_BATCH_DOCS or batch_bytes >= INGEST_BATCH_BYTES:
+                    _send(batch)
+                    sent += len(batch)
+                    batch, batch_bytes = [], 0
+                    if progress_callback:
+                        progress_callback("ingest", idx, total_files,
+                                          f"Loading corpus into RAG: {source} ({sent}/{to_send} missing docs sent)...")
+            if batch:
+                _send(batch)
+                sent += len(batch)
+            timings[source] = time.perf_counter() - start
+            logger.info("Ingestion OK for '%s': %d documents sent in %.1f s", source, sent, timings[source])
         except Exception as e:
-            logger.warning("Ingestion failed for '%s': %s", source, e)
+            # an incomplete index would make every later answer unreliable: stop here
+            # (the next evaluation resumes from the documents still missing)
+            logger.error("Ingestion failed for '%s' after %d documents: %s", source, sent, e)
+            raise RuntimeError(
+                f"Ingestion of the {source} corpus into the RAG failed after {sent}/{to_send} documents "
+                f"({ingest_endpoint}): {e}. Evaluation stopped: check the RAG /ingest endpoint and retry."
+            ) from e
 
     if progress_callback:
         progress_callback("ingest", total_files, total_files, "Corpus loading completed.")
+    return timings
 
 
 def get_dave_client_and_collections():
@@ -334,36 +343,53 @@ def get_dave_client_and_collections():
             collections = json.load(f)
     return DaveClient(), collections
 
-def query_dave(client, collections, question, source, actual_top_k, context_docs, search_query):
-    if source == "OHRBench":
-        formatted = [{"chunks": [{"text": d}]} if isinstance(d, str) else d for d in context_docs]
-        sys_prompt = client.build_system_prompt(formatted, question, max_docs=actual_top_k)
-        return client.generate_answer(sys_prompt, question), context_docs[:actual_top_k]
-        
-    collection_name = {"MultiHop-RAG": "MultiHop", "LegalBench-RAG": "LegalBench", "SQuAD-it": "SQuAD"}.get(source, source)
-    col_id = collections.get(collection_name)
-    
+# benchmark -> DAVE collection name, from the single mapping used by ingest_dave.py
+DAVE_COLLECTION_NAMES = {source: name for name, source in DAVE_COLLECTIONS.items()}
+
+def _dave_collection_id(collections, source):
+    """DAVE collection id of a benchmark."""
+    collection_name = DAVE_COLLECTION_NAMES.get(source, source)
+    col_id = (collections or {}).get(collection_name)
     if not col_id:
-        return f"Error: No collection for {collection_name}", []
-        
-    retrieved_docs = client.retrieve_chunks(search_query, col_id, top_k=actual_top_k)
-    sys_prompt = client.build_system_prompt(retrieved_docs, question, max_docs=actual_top_k)
-    return client.generate_answer(sys_prompt, question, collection_id=col_id), retrieved_docs
+        raise RagError(f"No DAVE collection for '{collection_name}' in .dave_collections.json (run ingest_dave.py)")
+    return col_id
+
+def query_dave(client, collections, source, actual_top_k, search_query):
+    """DAVE retrieval only (no generation): at most actual_top_k chunks, like the local RAG."""
+    col_id = _dave_collection_id(collections, source)
+    return client.retrieve_chunks(search_query, col_id, top_k=actual_top_k)
+
+def generate_dave(client, collections, source, question, docs):
+    """One DAVE generation on exactly `docs` (the filtered documents RAGAS will judge)."""
+    formatted = [{"chunks": [{"text": d}]} if isinstance(d, str) else d for d in docs]
+    sys_prompt = client.build_system_prompt(formatted, question)
+    return client.generate_answer(sys_prompt, question, collection_id=_dave_collection_id(collections, source))
 
 def query_local_rag(endpoint, question, actual_top_k, source, context_docs, search_query, inline=None):
     """Ask the local RAG; with inline=True it answers only on context_docs (texts) instead of its index."""
     payload = {"question": question, "top_k": actual_top_k, "benchmark_name": source, "search_query": search_query}
-    if inline if inline is not None else source == "OHRBench":
+    if inline:
         payload["documents"] = context_docs
 
+    # an HTTP error, an exception or a missing answer is a failure of the RAG, never an
+    # answer to evaluate: raise RagError and let run_evaluation mark the query as RAG_ERROR
     try:
         r = requests.post(endpoint, json=payload, timeout=120)
-        data = r.json()
-        if r.status_code != 200:
-            return f"Error {r.status_code}: {data.get('error', '')}".strip(), []
-        return data.get("answer", ""), data.get("contexts", [])
     except Exception as e:
-        return f"Exception: {e}", []
+        raise RagError(f"/ask request failed: {type(e).__name__}: {e}") from e
+    try:
+        data = r.json()
+    except ValueError:
+        data = None
+    if r.status_code != 200:
+        detail = data.get("error", "") if isinstance(data, dict) else r.text[:300]
+        raise RagError(f"/ask returned HTTP {r.status_code}: {detail}".strip().rstrip(":"))
+    if not isinstance(data, dict):
+        raise RagError(f"/ask returned a non-JSON response: {r.text[:300]}")
+    answer = data.get("answer")
+    if not isinstance(answer, str) or not answer.strip():
+        raise RagError("/ask returned no answer (missing or empty 'answer' field)")
+    return answer, data.get("contexts") or []
 
 # EVALUATION PIPELINE
 
@@ -379,31 +405,25 @@ def process_single_query(item, motore_rag, dave_client, dave_collections, ask_en
     else:
         sent_question = raw_question
 
-    context_docs = split_context_in_docs(item.get("context", ""))
-    
-    # Initial top_k is fixed and high (e.g. 10)
-    fetch_k = 10 
+    # Same top_k for both engines: fixed and high (e.g. 10)
+    fetch_k = 10
 
+    # Rule shared by both engines: retrieve -> threshold filter -> the answer is generated on
+    # exactly the filtered documents, which are the retrieved_contexts given to RAGAS
     if "DAVE" in motore_rag:
-        rag_answer_temp, retrieved_docs = query_dave(dave_client, dave_collections, sent_question, source, fetch_k, context_docs, search_query)
+        # DAVE: retrieval only here, the single generation happens after the filter
+        rag_answer_temp, retrieved_docs = None, query_dave(dave_client, dave_collections, source, fetch_k, search_query)
     else:
-        rag_answer_temp, retrieved_docs = query_local_rag(ask_endpoint, sent_question, fetch_k, source, context_docs, search_query)
+        rag_answer_temp, retrieved_docs = query_local_rag(ask_endpoint, sent_question, fetch_k, source, [], search_query)
 
     # THRESHOLD — batch-encoded semantic filtering
     model = _get_embedding_model()
     filtered_docs = filter_docs_by_threshold(retrieved_docs, search_query, threshold, model)
-                    
-    # Regenerate the answer ONLY on filtered documents
+
     if "DAVE" in motore_rag:
-        if source == "OHRBench":
-            formatted = [{"chunks": [{"text": d}]} if isinstance(d, str) else d for d in filtered_docs]
-            sys_prompt = dave_client.build_system_prompt(formatted, sent_question, max_docs=fetch_k)
-            rag_answer = dave_client.generate_answer(sys_prompt, sent_question)
-        else:
-            sys_prompt = dave_client.build_system_prompt(filtered_docs, sent_question, max_docs=fetch_k)
-            col_name = {"MultiHop-RAG": "MultiHop", "LegalBench-RAG": "LegalBench", "SQuAD-it": "SQuAD"}.get(source, source)
-            rag_answer = dave_client.generate_answer(sys_prompt, sent_question, collection_id=dave_collections.get(col_name))
-    elif source == "OHRBench" or len(filtered_docs) < len(retrieved_docs):
+        # one generation per query, on all and only the filtered documents
+        rag_answer = generate_dave(dave_client, dave_collections, source, sent_question, filtered_docs)
+    elif len(filtered_docs) < len(retrieved_docs):
         # RAGAS judges only the filtered documents: the answer must be generated on the
         # same ones, otherwise facts from discarded documents look like hallucinations
         filtered_texts = [_extract_doc_text(d) for d in filtered_docs]
@@ -423,11 +443,29 @@ def process_single_query(item, motore_rag, dave_client, dave_collections, ask_en
         "user_input": sent_question, "response": rag_answer, "retrieved_contexts": doc_strings, "reference": gold
     }
 
+def _as_rag_error(e):
+    """Any failure of the RAG call as a RagError (DAVE raises HTTPError, TRPCError, DaveEmptyAnswerError...)."""
+    return e if isinstance(e, RagError) else RagError(f"{type(e).__name__}: {e}")
+
+def _rag_error_report(item, err):
+    """Report of a query the RAG failed to answer: no answer, no RAGAS metrics (all marked
+    as not computed, so every average skips it), classified as RAG_ERROR."""
+    rep = {
+        "query_id": item["id"], "source": item["source"], "domanda": item["question"],
+        "risposta_rag": "", "gold": item["gold_answer"], "docs": "", "rag_error": str(err),
+        "ragas_fallita": False, "metriche_non_valide": list(_METRIC_KEYS),
+        **{key: 0.0 for key in _METRIC_KEYS},
+    }
+    rep.update(classify_query_verdict(rep))
+    return rep
+
 def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, llm_api_key="", progress_callback=None, tps_callback=None, motore_rag="Local RAG (BM25)", benchmark_files=None, selected_metrics=None, max_workers=1):
+    run_start = time.perf_counter()
     # --- Automatic ingestion: send the corpus to the RAG under test ---
+    ingest_times = {}
     if benchmark_files and "DAVE" not in motore_rag:
         if progress_callback: progress_callback("ingest", 0, 1, "Loading corpus into the RAG system...")
-        ingest_corpus_to_rag(benchmark_files, ROOT_DIR / "Run", rag_base_url, progress_callback)
+        ingest_times = ingest_corpus_to_rag(benchmark_files, ROOT_DIR / "Run", rag_base_url, progress_callback)
 
     if progress_callback: progress_callback("fetch", 0, len(dataset), "Querying RAG in progress...")
 
@@ -437,11 +475,35 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, l
     ui_reports = []
     ragas_samples = {"user_input": [], "response": [], "retrieved_contexts": [], "reference": []}
 
+    answered_reports = []  # queries the RAG answered, aligned with the RAGAS rows
+    query_times = {}  # seconds spent querying the RAG, per benchmark
     for idx, item in enumerate(dataset):
-        ui_rep, ragas_samp = process_single_query(item, motore_rag, dave_client, dave_collections, ask_endpoint, threshold, conversation_memory)
-        ui_reports.append(ui_rep)
-        for k in ragas_samples: ragas_samples[k].append(ragas_samp[k])
+        query_start = time.perf_counter()
+        try:
+            ui_rep, ragas_samp = process_single_query(item, motore_rag, dave_client, dave_collections, ask_endpoint, threshold, conversation_memory)
+        except Exception as e:
+            # infrastructure failure (HTTP error, empty answer, DAVE/tRPC error...): the query
+            # is recorded as RAG_ERROR, kept out of RAGAS and of the averages, and the run goes on
+            err = _as_rag_error(e)
+            logger.warning("RAG error on query %s: %s", item.get("id"), err)
+            ui_reports.append(_rag_error_report(item, err))
+        else:
+            ui_reports.append(ui_rep)
+            answered_reports.append(ui_rep)
+            for k in ragas_samples: ragas_samples[k].append(ragas_samp[k])
+        query_times[item["source"]] = query_times.get(item["source"], 0.0) + time.perf_counter() - query_start
         if progress_callback: progress_callback("fetch", idx + 1, len(dataset), "Querying RAG in progress...")
+
+    rag_errors = len(ui_reports) - len(answered_reports)
+    if not answered_reports:
+        first_error = next((r["rag_error"] for r in ui_reports if r.get("rag_error")), "no queries")
+        raise RuntimeError(
+            f"The RAG did not answer any of the {len(ui_reports)} queries, nothing to evaluate. "
+            f"First error: {first_error}"
+        )
+    if rag_errors:
+        logger.warning("%d/%d queries failed on the RAG side (RAG_ERROR): excluded from RAGAS and the averages.",
+                       rag_errors, len(ui_reports))
 
     # --- Truncation of contexts that are too long for RAGAS ---
     truncated_contexts = 0
@@ -501,6 +563,8 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, l
     if "context_recall" in selected_metrics: metric_objects.append(context_recall)
 
     try:
+        # RAGAS rows follow the answered queries only (RAG_ERROR queries were never sent)
+        ragas_start = time.perf_counter()
         df_ragas = evaluate(
             dataset=Dataset.from_dict(ragas_samples),
             metrics=metric_objects,
@@ -508,21 +572,9 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, l
             run_config=RunConfig(max_workers=max_workers, max_retries=retries, timeout=120),
             raise_exceptions=False
         ).to_pandas()
+        ragas_seconds = time.perf_counter() - ragas_start
 
-        # Count queries with failed metrics (NaN), only among the metrics actually computed
-        metric_cols = [c for c in _METRIC_KEYS.values() if c in df_ragas.columns]
-        failed_queries = int(df_ragas[metric_cols].isna().any(axis=1).sum())
-        total_queries = len(df_ragas)
-        successful_queries = total_queries - failed_queries
-
-        if failed_queries > 0:
-            logger.warning(
-                "RAGAS: %d/%d queries have NaN metrics (failed). "
-                "Averages will be calculated only on the %d successful queries.",
-                failed_queries, total_queries, successful_queries
-            )
-
-        for idx, rep in enumerate(ui_reports):
+        for idx, rep in enumerate(answered_reports):
             row = df_ragas.iloc[idx]
             # Use 0.0 as fallback for NaN or not selected metrics, but keep track of them
             # in 'metriche_non_valide' so the classifier ignores them
@@ -538,6 +590,18 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, l
             values["metriche_non_valide"] = invalid
             rep.update(values)
 
+        # Count queries with failed metrics (NaN), only among the metrics actually computed
+        total_queries = len(answered_reports)
+        failed_queries = sum(1 for r in answered_reports if r["ragas_fallita"])
+        successful_queries = total_queries - failed_queries
+
+        if failed_queries > 0:
+            logger.warning(
+                "RAGAS: %d/%d queries have NaN metrics (failed). "
+                "Averages will be calculated only on the %d successful queries.",
+                failed_queries, total_queries, successful_queries
+            )
+
         # Classify verdict and error pattern for each query
         for rep in ui_reports:
             rep.update(classify_query_verdict(rep))
@@ -549,10 +613,20 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, l
                 "riuscite": successful_queries,
                 "fallite": failed_queries,
                 "contesti_troncati": truncated_contexts,
+                "errori_rag": rag_errors,
+                # seconds per phase: ingestion and queries per benchmark, RAGAS for the whole run
+                "tempi": {
+                    "ingestion": ingest_times,
+                    "query": query_times,
+                    "ragas": ragas_seconds,
+                    "totale": time.perf_counter() - run_start,
+                },
             }
+        logger.info("Timings: ingestion %.1f s, RAG queries %.1f s, RAGAS %.1f s",
+                    sum(ingest_times.values()), sum(query_times.values()), ragas_seconds)
 
     except Exception as e:
-        for rep in ui_reports:
+        for rep in answered_reports:
             rep.update({
                 "retrieval_voto": 0, "faithfulness_voto": 0, "correctness_voto": 0,
                 "relevancy_voto": 0, "recall_voto": 0, "ragas_fallita": True,

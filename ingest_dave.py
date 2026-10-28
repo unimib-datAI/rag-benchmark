@@ -1,149 +1,156 @@
+import argparse
 import json
-import os
 import time
-import glob
 from pathlib import Path
 from tqdm import tqdm
 from dave_client import DaveClient
+# same corpora that webpage/evaluator.py sends to the local RAG
+from corpus_sources import Corpus, DAVE_COLLECTIONS as COLLECTIONS
 
 BASE_DIR = Path(__file__).resolve().parent
+COLLECTION_DB = BASE_DIR / ".dave_collections.json"
+DOC_CACHE_DB = BASE_DIR / ".dave_docs_cache.json"
+# job di upload non ancora verificati, per collection id: DAVE elabora i file in modo
+# asincrono e alcuni possono fallire anche dopo che il job è stato accettato
+JOBS_DB = BASE_DIR / ".dave_upload_jobs.json"
+JOB_POLL_SECONDS = 30
+MAX_UPLOAD_ROUNDS = 3
 
-def upload_docs_in_batches(client: DaveClient, collection_id: str, docs: list, benchmark_name: str):
-    DOC_CACHE_DB = BASE_DIR / ".dave_docs_cache.json"
-    doc_cache = {}
-    if DOC_CACHE_DB.exists():
-        with open(DOC_CACHE_DB, "r") as f:
-            doc_cache = json.load(f)
-            
-    if benchmark_name not in doc_cache:
-        doc_cache[benchmark_name] = []
-        
-    already_uploaded = set(doc_cache[benchmark_name])
-    new_docs = [d for d in docs if d["fileName"] not in already_uploaded and d.get("content", "").strip()]
-    
-    if not new_docs:
-        print(f"[{benchmark_name}] Tutti i documenti ({len(docs)}) sono già presenti in cache. Salto l'upload.")
-        return
-        
-    print(f"[{benchmark_name}] {len(docs) - len(new_docs)} doc già caricati. Inizio upload dei {len(new_docs)} nuovi doc...")
+# Batch conservativo: max 1MB payload o 20 docs
+MAX_BATCH_BYTES = 1 * 1024 * 1024  # 1 MB
+MAX_BATCH_DOCS = 20
+MAX_RETRIES = 3
+SLEEP_BETWEEN = 5  # secondi tra batch
 
-    # Tronca documenti troppo grandi (>500KB) - il server non li regge
-    MAX_DOC_CHARS = 500_000
-    truncated = 0
-    for doc in new_docs:
-        if len(doc.get("content", "")) > MAX_DOC_CHARS:
-            doc["content"] = doc["content"][:MAX_DOC_CHARS] + "\n[... troncato ...]"
-            truncated += 1
-    if truncated:
-        print(f"[{benchmark_name}] Troncati {truncated} documenti troppo grandi (>{MAX_DOC_CHARS//1000}KB).")
 
-    # Batch conservativo: max 1MB payload o 20 docs
-    MAX_BATCH_BYTES = 1 * 1024 * 1024  # 1 MB
-    MAX_BATCH_DOCS = 20
-    MAX_RETRIES = 3
-    SLEEP_BETWEEN = 5  # secondi tra batch
-    
-    batches = []
-    current_batch = []
-    current_size = 0
-    for doc in new_docs:
-        doc_size = len(doc.get("content", "").encode("utf-8"))
-        if current_batch and (current_size + doc_size > MAX_BATCH_BYTES or len(current_batch) >= MAX_BATCH_DOCS):
-            batches.append(current_batch)
-            current_batch = []
-            current_size = 0
-        current_batch.append(doc)
-        current_size += doc_size
-    if current_batch:
-        batches.append(current_batch)
+def _load_json(path):
+    if path.exists():
+        with open(path, "r") as f:
+            return json.load(f)
+    return {}
 
-    for batch_idx in tqdm(range(len(batches)), desc=f"[{benchmark_name}] Uploading", unit="batch"):
-        batch = batches[batch_idx]
-        job_id = None
-        
-        # Retry con backoff esponenziale
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                job = client.create_txt_upload_job(collection_id, batch)
-                job_id = job["jobId"]
-                break
-            except Exception as e:
-                if attempt < MAX_RETRIES:
-                    wait = 10 * (2 ** (attempt - 1))
-                    tqdm.write(f"[{benchmark_name}] Batch {batch_idx+1} tentativo {attempt}/{MAX_RETRIES} fallito: {e}. Riprovo tra {wait}s...")
-                    time.sleep(wait)
-                else:
-                    tqdm.write(f"[{benchmark_name}] Batch {batch_idx+1} fallito dopo {MAX_RETRIES} tentativi: {e}. Salto.")
-                    job_id = None
-        
-        if not job_id:
+
+def _save_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f)
+
+
+def _load_doc_cache(mapping):
+    """Documenti già caricati, per collection id. Le cache vecchie erano indicizzate per
+    nome del benchmark: vengono spostate sull'id della collection corrispondente."""
+    doc_cache = _load_json(DOC_CACHE_DB)
+    for name, collection_id in mapping.items():
+        if name in doc_cache and collection_id not in doc_cache:
+            doc_cache[collection_id] = doc_cache.pop(name)
+    return doc_cache
+
+
+def _file_name(doc_id):
+    return doc_id if doc_id.endswith(".txt") else f"{doc_id}.txt"
+
+
+def check_jobs(client: DaveClient, collection_id: str, name: str, doc_cache: dict, jobs: dict):
+    """Verifica i job di upload della collection: i file falliti vengono tolti dalla cache,
+    così la prossima chiamata a upload_corpus li ricarica. Ritorna (job in corso, file falliti)."""
+    pending, failed = [], []
+    for job_id in jobs.get(collection_id, []):
+        try:
+            files = client.get_upload_job_status(job_id).get("files", [])
+        except Exception as e:
+            print(f"[{name}] Stato del job {job_id} non disponibile: {e}")
+            pending.append(job_id)
             continue
-        
-        # Fire-and-forget: assumiamo che se il job è stato creato (job_id presente),
-        # il server lo processerà in modo asincrono. Aggiorniamo subito la cache.
-        doc_cache[benchmark_name].extend([d["fileName"] for d in batch])
-        with open(DOC_CACHE_DB, "w") as f:
-            json.dump(doc_cache, f)
-        
-        time.sleep(SLEEP_BETWEEN)
+        if any(f.get("status") not in ("completed", "failed") for f in files):
+            pending.append(job_id)
+            continue
+        for f in files:
+            if f.get("status") == "failed":
+                failed.append(f["fileName"])
+                print(f"[{name}] {f['fileName']} non indicizzato da DAVE: {f.get('error', 'errore sconosciuto')}")
 
-def ingest_file(client: DaveClient, filepath: str, benchmark_name: str):
-    print(f"[{benchmark_name}] Ingesting {filepath}...")
-    
-    # Leggiamo il mapping salvato in precedenza
-    COLLECTION_DB = BASE_DIR / ".dave_collections.json"
-    mapping = {}
-    if COLLECTION_DB.exists():
-        with open(COLLECTION_DB, "r") as f:
-            mapping = json.load(f)
-            
-    collection_id = mapping.get(benchmark_name)
-    if not collection_id:
-        collection_id = client.create_collection(benchmark_name)
-        mapping[benchmark_name] = collection_id
-        with open(COLLECTION_DB, "w") as f:
-            json.dump(mapping, f)
-        print(f"Creata nuova collection per {benchmark_name} (ID: {collection_id})")
+    if failed:
+        failed_set = set(failed)
+        doc_cache[collection_id] = [n for n in doc_cache.get(collection_id, []) if n not in failed_set]
+        _save_json(DOC_CACHE_DB, doc_cache)
+    jobs[collection_id] = pending
+    _save_json(JOBS_DB, jobs)
+    return pending, failed
 
-    # Leggec i documenti
-    docs = []
-    if filepath.endswith(".json"):
-        with open(filepath, "r", encoding="utf-8-sig") as f:
-            data = json.load(f)
-            # Gestione array di dict o dict singolo/dizionario di dizionari
-            if isinstance(data, list):
-                for item in data:
-                    text = item.get("text", str(item))
-                    doc_id = item.get("id", f"doc_{len(docs)}")
-                    docs.append({"fileName": f"{doc_id}.txt", "content": text})
-            elif isinstance(data, dict):
-                # Potrebbe essere il formato di MultiHop: { "id1": {"text": ...}, "id2": {"text": ...} }
-                # Oppure un record singolo
-                if len(data) > 0 and isinstance(next(iter(data.values())), dict) and "text" in next(iter(data.values())):
-                    for k, v in data.items():
-                        text = v.get("text", str(v))
-                        docs.append({"fileName": f"{k}.txt", "content": text})
-                else:
-                    text = data.get("text", str(data))
-                    docs.append({"fileName": "doc_0.txt", "content": text})
-    elif filepath.endswith(".jsonl"):
-        with open(filepath, "r", encoding="utf-8") as f:
-            for line in f:
-                data = json.loads(line)
-                text = data.get("text", "")
-                doc_id = data.get("_id") or data.get("document_id") or data.get("id") or f"doc_{len(docs)}"
-                if text:
-                    docs.append({"fileName": f"{doc_id}.txt", "content": text})
 
-    if not docs:
-        print(f"Nessun documento trovato in {filepath}")
-        return
+def upload_corpus(client: DaveClient, collection_id: str, corpus: Corpus, name: str, doc_cache: dict, jobs: dict):
+    """Carica su DAVE solo i documenti del corpus non ancora presenti nella collection."""
+    already_uploaded = set(doc_cache.setdefault(collection_id, []))
+    ids = corpus.ids()
+    missing_ids = {doc_id for doc_id in ids if _file_name(doc_id) not in already_uploaded}
 
-    print(f"Trovati {len(docs)} documenti in {filepath}. Inizio upload a lotti (max 100 alla volta)...")
-    upload_docs_in_batches(client, collection_id, docs, benchmark_name)
+    if not missing_ids:
+        print(f"[{name}] Tutti i documenti ({len(ids)}) sono già presenti in cache. Salto l'upload.")
+        return 0
+    print(f"[{name}] {len(ids) - len(missing_ids)} doc già caricati. Inizio upload dei {len(missing_ids)} nuovi doc...")
+
+    def batches():
+        batch, size = [], 0
+        for doc_id, text in corpus.docs(include=missing_ids):
+            doc_size = len(text.encode("utf-8"))
+            if batch and (size + doc_size > MAX_BATCH_BYTES or len(batch) >= MAX_BATCH_DOCS):
+                yield batch
+                batch, size = [], 0
+            batch.append({"fileName": _file_name(doc_id), "content": text})
+            size += doc_size
+        if batch:
+            yield batch
+
+    last_job_id = None
+    with tqdm(total=len(missing_ids), desc=f"[{name}] Uploading", unit="doc") as bar:
+        for batch in batches():
+            job_id = None
+
+            # Retry con backoff esponenziale
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    job_id = client.create_txt_upload_job(collection_id, batch)["jobId"]
+                    break
+                except Exception as e:
+                    if attempt < MAX_RETRIES:
+                        wait = 10 * (2 ** (attempt - 1))
+                        tqdm.write(f"[{name}] Batch tentativo {attempt}/{MAX_RETRIES} fallito: {e}. Riprovo tra {wait}s...")
+                        time.sleep(wait)
+                    else:
+                        tqdm.write(f"[{name}] Batch fallito dopo {MAX_RETRIES} tentativi: {e}. Salto.")
+
+            bar.update(len(batch))
+            if not job_id:
+                continue
+            last_job_id = job_id
+
+            # Il job è stato accettato: i file vanno in cache subito, e quelli che DAVE
+            # non riesce a indicizzare vengono tolti da check_jobs
+            doc_cache[collection_id].extend(d["fileName"] for d in batch)
+            _save_json(DOC_CACHE_DB, doc_cache)
+            jobs.setdefault(collection_id, []).append(job_id)
+            _save_json(JOBS_DB, jobs)
+
+            time.sleep(SLEEP_BETWEEN)
+
+    if last_job_id:
+        print(f"[{name}] Upload completato. Ultimo job: {last_job_id}")
+    return len(missing_ids)
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Carica i corpus dei benchmark su DAVE")
+    parser.add_argument("benchmarks", nargs="*", metavar="BENCHMARK",
+                        help=f"collection da caricare (default: tutte). Valori: {', '.join(COLLECTIONS)}")
+    parser.add_argument("--recreate", nargs="+", default=[], metavar="BENCHMARK",
+                        help="crea una nuova collection invece di aggiornare quella esistente "
+                             "(la vecchia resta su DAVE e va eliminata a mano)")
+    parser.add_argument("--wait", action="store_true",
+                        help="attende che DAVE abbia indicizzato tutti i file e ricarica quelli falliti")
+    args = parser.parse_args()
+    unknown = [b for b in args.benchmarks + args.recreate if b not in COLLECTIONS]
+    if unknown:
+        parser.error(f"benchmark sconosciuti: {', '.join(unknown)}. Valori: {', '.join(COLLECTIONS)}")
+
     try:
         client = DaveClient()
     except Exception as e:
@@ -152,169 +159,49 @@ def main():
 
     print("Connesso a DAVE con successo!")
 
-    COLLECTION_DB = BASE_DIR / ".dave_collections.json"
-    mapping = {}
-    if COLLECTION_DB.exists():
-        with open(COLLECTION_DB, "r") as f:
-            mapping = json.load(f)
+    mapping = _load_json(COLLECTION_DB)
+    doc_cache = _load_doc_cache(mapping)
+    jobs = _load_json(JOBS_DB)
 
-    # Ingest LegalBench (dalla cartella corpus)
-    legalbench_dir = BASE_DIR / "Benchmarks" / "legalbenchrag" / "data" / "corpus"
-    if legalbench_dir.exists():
-        for root, _, files in os.walk(legalbench_dir):
-            for file in files:
-                if file.endswith(".txt"):
-                    # Pass the single text files or process them differently
-                    pass
-        # Rielaborazione per LegalBench: raggruppare i .txt in un payload
-        docs = []
-        for root, _, files in os.walk(legalbench_dir):
-            for file in files:
-                if file.endswith(".txt"):
-                    try:
-                        with open(os.path.join(root, file), "r", encoding="utf-8-sig") as f:
-                            docs.append({"fileName": file, "content": f.read()})
-                    except Exception:
-                        pass
-        if docs:
-            print(f"[LegalBench] Trovati {len(docs)} documenti.")
-            collection_id = mapping.get("LegalBench")
-            if not collection_id:
-                collection_id = client.create_collection("LegalBench")
-                mapping["LegalBench"] = collection_id
-                with open(COLLECTION_DB, "w") as f: json.dump(mapping, f)
-            print("Inizio upload a lotti per LegalBench...")
-            upload_docs_in_batches(client, collection_id, docs, "LegalBench")
-            print("Upload completato per LegalBench.")
-    else:
-        print(f"Cartella non trovata: {legalbench_dir}")
+    for name in args.benchmarks or list(COLLECTIONS):
+        corpus = Corpus(COLLECTIONS[name])
+        missing = corpus.missing_paths()
+        if missing:
+            print(f"[{name}] Corpus non trovato: {', '.join(str(p) for p in missing)}")
+            continue
 
-    # Ingest MultiHop
-    multihop_path = BASE_DIR / "Benchmarks" / "MultiHop-RAG" / "dataset" / "corpus.json"
-    if multihop_path.exists():
-        ingest_file(client, str(multihop_path), "MultiHop")
-    else:
-        print(f"File non trovato: {multihop_path}")
+        collection_id = mapping.get(name)
+        if not collection_id or name in args.recreate:
+            old_id = collection_id
+            collection_id = client.create_collection(name)
+            mapping[name] = collection_id
+            _save_json(COLLECTION_DB, mapping)
+            print(f"[{name}] Creata nuova collection (ID: {collection_id})"
+                  + (f"; la precedente ({old_id}) non è più usata" if old_id else ""))
 
-    # Ingest CRAG
-    crag_path = BASE_DIR / "Run" / "Tutto_CRAG_DAVE.jsonl"
-    if not crag_path.exists():
-        crag_path = BASE_DIR / "Run" / "Tutto_CRAG_DAVE.json"
-    if crag_path.exists():
-        try:
-            def _iter_crag(p):
-                with open(p, "r", encoding="utf-8-sig") as f:
-                    if str(p).endswith(".jsonl"):
-                        for line in f:
-                            if line.strip():
-                                yield json.loads(line)
-                    else:
-                        for item in json.load(f):
-                            yield item
+        # i file falliti nelle esecuzioni precedenti tornano tra quelli da caricare
+        check_jobs(client, collection_id, name, doc_cache, jobs)
+        upload_corpus(client, collection_id, corpus, name, doc_cache, jobs)
+        if not args.wait:
+            continue
 
-            docs = []
-            doc_ids_visti = set()
-            for item in _iter_crag(crag_path):
-                contesto_grezzo = item.get("context", "")
-                lines = [line.strip() for line in contesto_grezzo.splitlines() if line.strip()]
-                
-                docs_temporanei, current = [], []
-                for line in lines:
-                    is_new_doc = line.startswith("[") and "]" in line
-                    if is_new_doc and current:
-                        docs_temporanei.append(" ".join(current).strip())
-                        current = [line]
-                    else:
-                        current.append(line)
-                if current:
-                    docs_temporanei.append(" ".join(current).strip())
-                    
-                for doc in docs_temporanei:
-                    id_fittizio = doc[:50].replace(" ", "_")
-                    id_fittizio = "".join(c for c in id_fittizio if c.isalnum() or c == "_")
-                    if id_fittizio not in doc_ids_visti and doc.strip():
-                        docs.append({"fileName": f"{id_fittizio}.txt", "content": doc})
-                        doc_ids_visti.add(id_fittizio)
-                        
-            if docs:
-                print(f"[CRAG] Trovati {len(docs)} documenti.")
-                
-                # Ricarica il mapping aggiornato per evitare di sovrascrivere MultiHop
-                if COLLECTION_DB.exists():
-                    with open(COLLECTION_DB, "r") as f:
-                        mapping = json.load(f)
-                
-                collection_id = mapping.get("CRAG")
-                if not collection_id:
-                    collection_id = client.create_collection("CRAG")
-                    mapping["CRAG"] = collection_id
-                    with open(COLLECTION_DB, "w") as f: json.dump(mapping, f)
-                print("Inizio upload a lotti per CRAG...")
-                upload_docs_in_batches(client, collection_id, docs, "CRAG")
-                print("Upload completato per CRAG.")
-        except Exception as e:
-            print(f"Errore caricamento CRAG: {e}")
-    else:
-        print(f"File non trovato: {crag_path}")
+        for round_ in range(1, MAX_UPLOAD_ROUNDS + 1):
+            pending, failed = check_jobs(client, collection_id, name, doc_cache, jobs)
+            while pending:
+                print(f"[{name}] DAVE sta ancora indicizzando ({len(pending)} job in corso)...")
+                time.sleep(JOB_POLL_SECONDS)
+                pending, new_failed = check_jobs(client, collection_id, name, doc_cache, jobs)
+                failed += new_failed
+            if not failed:
+                print(f"[{name}] Tutti i documenti sono indicizzati su DAVE.")
+                break
+            if round_ == MAX_UPLOAD_ROUNDS:
+                print(f"[{name}] {len(failed)} documenti ancora non indicizzati dopo {MAX_UPLOAD_ROUNDS} tentativi: "
+                      "rilancia lo script per riprovare.")
+                break
+            print(f"[{name}] Ricarico {len(failed)} documenti falliti (tentativo {round_ + 1}/{MAX_UPLOAD_ROUNDS})...")
+            upload_corpus(client, collection_id, corpus, name, doc_cache, jobs)
 
-    # MTRAG ha tanti file .jsonl nella cartella corpora/document_level
-    mtrag_dir = BASE_DIR / "Benchmarks" / "mt-rag-benchmark" / "corpora" / "document_level"
-    if mtrag_dir.exists():
-        for jsonl_file in glob.glob(str(mtrag_dir / "**" / "*.jsonl"), recursive=True):
-           if os.path.isfile(jsonl_file):
-             ingest_file(client, jsonl_file, "MTRAG")
-    else:
-        print(f"Cartella non trovata: {mtrag_dir}")
-
-    # Ingest SQuAD-it
-    squad_path = BASE_DIR / "Run" / "squad_corpus.json"
-    if squad_path.exists():
-        ingest_file(client, str(squad_path), "SQuAD")
-    else:
-        print(f"File non trovato: {squad_path}")
-
-    # Ingest OHRBench
-    ohrbench_path = BASE_DIR / "Run" / "Tutto_OHRBench_DAVE.jsonl"
-    if not ohrbench_path.exists():
-        ohrbench_path = BASE_DIR / "Run" / "Tutto_OHRBench_DAVE.json"
-    if ohrbench_path.exists():
-        try:
-            def _iter_ohr(p):
-                with open(p, "r", encoding="utf-8-sig") as f:
-                    if str(p).endswith(".jsonl"):
-                        for line in f:
-                            if line.strip():
-                                yield json.loads(line)
-                    else:
-                        for item in json.load(f):
-                            yield item
-
-            docs = []
-            for item in _iter_ohr(ohrbench_path):
-                contesto = item.get("context", "")
-                doc_id = item.get("id", "doc_0")
-                if contesto.strip():
-                    docs.append({"fileName": f"{doc_id}.txt", "content": contesto})
-            
-            if docs:
-                print(f"[OHRBench] Trovati {len(docs)} documenti.")
-                
-                if COLLECTION_DB.exists():
-                    with open(COLLECTION_DB, "r") as f:
-                        mapping = json.load(f)
-                        
-                collection_id = mapping.get("OHRBench")
-                if not collection_id:
-                    collection_id = client.create_collection("OHRBench")
-                    mapping["OHRBench"] = collection_id
-                    with open(COLLECTION_DB, "w") as f: json.dump(mapping, f)
-                print("Inizio upload a lotti per OHRBench...")
-                upload_docs_in_batches(client, collection_id, docs, "OHRBench")
-                print("Upload completato per OHRBench.")
-        except Exception as e:
-            print(f"Errore caricamento OHRBench: {e}")
-    else:
-        print(f"File non trovato: {ohrbench_path}")
 
 if __name__ == "__main__":
     main()

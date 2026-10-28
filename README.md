@@ -20,9 +20,10 @@ Il progetto offre sia una **Dashboard Web interattiva** (Streamlit) per l'analis
    - [Opzione A: Dashboard Web (Streamlit)](#opzione-a-dashboard-web-streamlit)
    - [Opzione B: Interfaccia CLI da Terminale](#opzione-b-interfaccia-cli-da-terminale)
 9. [Configurazione (`config.json` e `.env`)](#-configurazione)
-10. [Integrazione con DAVE (Elasticsearch)](#-integrazione-con-dave)
-11. [Aggiunta di un Nuovo Benchmark](#-aggiunta-di-un-nuovo-benchmark)
-12. [Struttura del Progetto](#-struttura-del-progetto)
+10. [Collegare il proprio RAG (`/ingest` e `/ask`)](#-collegare-il-proprio-rag)
+11. [Integrazione con DAVE (Elasticsearch)](#-integrazione-con-dave)
+12. [Aggiunta di un Nuovo Benchmark](#-aggiunta-di-un-nuovo-benchmark)
+13. [Struttura del Progetto](#-struttura-del-progetto)
 
 ---
 
@@ -68,6 +69,8 @@ La valutazione impiega un modello linguistico avanzato in modalità **LLM-as-a-J
 | **Answer Correctness** | *Generazione* | Misura l'accuratezza semantica e fattuale della risposta rispetto alla risposta di riferimento (*ground truth*). |
 | **Answer Relevancy** | *Generazione* | Misura quanto la risposta fornita sia diretta e pertinente rispetto alla domanda posta. |
 
+> **OHRBench:** il RAG fa retrieval sulle oltre 8.500 pagine PDF del benchmark, convertite in testo con errori OCR realistici (versione `semantic_noise_MinerU_moderate` di `retrieval.zip`, impostata in `OHR_VERSION` in `corpus_sources.py`). L'evidenza gold della domanda non viene mai passata al RAG. Circa l'1,6% delle domande di `qas.json` riguarda documenti assenti da questa versione del corpus (nomi di file non allineati nei dati ufficiali).
+
 ---
 
 ## 🔬 Diagnostica Automatica & Error Pattern
@@ -106,6 +109,7 @@ Per le risposte errate (e come causa delle risposte parziali) il pattern deriva 
 | `PARTIAL` | **Partial Answer** | Risposta incompleta (correttezza intermedia tra 0.40 e 0.70), con causa probabile calcolata con la stessa tabella. | Barnett et al. 2024 — FP7 *Incomplete* |
 | `CORRECT` | **Correct Answer** | Risposta ampiamente corretta (correttezza >= 0.70). | Es et al. 2024 (RAGAS, *Answer Correctness*) |
 | `EVAL_FAIL` | **Evaluation Failure** | RAGAS non ha calcolato la *Answer Correctness* (errore del giudice, timeout o metrica non selezionata): verdetto *Not Evaluated*, esclusa dal conteggio degli errori. | Errore del valutatore, non del RAG |
+| `RAG_ERROR` | **RAG Error** | Il RAG non ha risposto (HTTP diverso da `200`, timeout, eccezione, risposta vuota, es. DAVE che chiude lo stream vuoto): verdetto *Not Evaluated*, la query non viene inviata a RAGAS ed è esclusa dalle medie e dal conteggio degli errori. Se nessuna query riceve risposta la valutazione si ferma e non viene salvata. | Errore dell'infrastruttura, non una risposta sbagliata |
 | `UNKNOWN` | **Unclassified Error** | Risposta errata, ma la causa non è determinabile perché mancano metriche diagnostiche (NaN o non selezionate). | — |
 
 ### 3. Metriche mancanti, medie e diagnostica aggregata
@@ -122,7 +126,7 @@ Per le risposte errate (e come causa delle risposte parziali) il pattern deriva 
 
 ### Motori RAG Sotto Esame
 1. **Local RAG (BM25 / Custom HTTP)**:
-   - Qualsiasi server RAG locale o remoto che risponde allo schema standard `POST /ask` (`question`, `top_k`, `benchmark_name`, `documents`).
+   - Qualsiasi server RAG locale o remoto che espone i due endpoint `POST /ingest` e `POST /ask` (vedi [Collegare il proprio RAG](#-collegare-il-proprio-rag)).
 2. **DAVE (Elasticsearch / Next.js / tRPC)**:
    - Piattaforma documentale con indicizzazione full-text/ibrida e generazione LLM integrata via streaming, con autenticazione Keycloak.
 
@@ -172,7 +176,7 @@ pip install -r requirements.txt
 Modifica `.env` inserendo le credenziali Keycloak e l'URL di DAVE se intendi testare tale motore.
 
 ### 5. Scaricare i Benchmark
-I dataset grezzi non sono inclusi nel repository. Nella sidebar della dashboard il pulsante **Download Benchmark** scarica dalle fonti ufficiali (GitHub, Hugging Face, Dropbox) solo i file usati dagli script di estrazione (~1 GB) e li salva in `Benchmarks_download.zip` nella cartella del progetto. In alternativa, da terminale:
+I dataset grezzi non sono inclusi nel repository. Nella sidebar della dashboard il pulsante **Download Benchmark** scarica dalle fonti ufficiali (GitHub, Hugging Face, Dropbox) solo i file usati dagli script di estrazione (~1 GB, compreso il corpus OCR di OHRBench) e li salva in `Benchmarks_download.zip` nella cartella del progetto. In alternativa, da terminale:
 
 ```bash
 python webpage/benchmark_download.py
@@ -285,7 +289,7 @@ Conserva le impostazioni di default condivise da CLI e Web Dashboard:
 
 ```json
 {
-    "endpoint": "http://127.0.0.1:8000/ask",
+    "endpoint": "http://127.0.0.1:8000",
     "top_k": "3",
     "ollama_url": "http://localhost:11434",
     "model": "gemma4:31b-cloud",
@@ -305,6 +309,97 @@ DAVE_USERNAME=il_tuo_username
 DAVE_PASSWORD=la_tua_password
 DAVE_CLIENT_SECRET=il_tuo_secret
 ```
+
+---
+
+## 🔗 Collegare il proprio RAG
+
+Per valutare il proprio sistema con il motore **Local RAG**, il server deve esporre **due endpoint HTTP** sotto lo stesso Base URL (campo *Base URL RAG* della dashboard, `--endpoint` da CLI, es. `http://127.0.0.1:8000`):
+
+| Endpoint | A cosa serve |
+| :--- | :--- |
+| `POST /ingest` | Controllare quali documenti del corpus mancano e caricarli nell'indice del RAG |
+| `POST /ask` | Rispondere a una domanda restituendo la risposta e i documenti recuperati |
+
+### Flusso di una valutazione
+
+Per ogni benchmark selezionato, prima di porre le domande:
+
+1. SuperRagBench legge il **corpus completo** del benchmark (lo stesso caricato su DAVE da `ingest_dave.py`), non i soli documenti gold:
+
+   | Benchmark | Corpus indicizzato |
+   | :--- | :--- |
+   | MultiHop-RAG | `Benchmarks/MultiHop-RAG/dataset/corpus.json` |
+   | MTRAG | `Benchmarks/mt-rag-benchmark/corpora/document_level/*.jsonl` |
+   | LegalBench-RAG | `Benchmarks/legalbenchrag/data/corpus/` |
+   | SQuAD-it | `Run/squad_corpus.json` |
+   | OHRBench | `Benchmarks/OHR-Bench/data/retrieval_base/semantic_noise_MinerU_moderate/` (una pagina PDF per documento, testo con rumore OCR) |
+   | CRAG | Pagine web fornite dal benchmark per ogni domanda (campo `context` di `Run/Tutto_CRAG_DAVE.jsonl`), come **HTML grezzo**: estrarre l'informazione dal codice web è compito del RAG |
+
+   I documenti più lunghi di 500.000 caratteri vengono divisi in parti (`<id>_part2`, `<id>_part3`, …), lo stesso limite usato per DAVE.
+
+   Se il corpus non è stato scaricato, la valutazione si ferma con un errore (vedi [Scaricare i Benchmark](#5-scaricare-i-benchmark)).
+2. Chiede a `/ingest` quali documenti mancano nell'indice (`check_only`).
+3. Se non manca nulla passa subito alla valutazione; altrimenti invia **solo i documenti mancanti**, a lotti (max 500 documenti o 20 MB per richiesta).
+4. Esegue una chiamata `/ask` per ogni domanda.
+
+Da CLI l'ingestion si può saltare con `--no-ingest`.
+
+### `POST /ingest` — controllo dei documenti presenti
+
+Richiesta:
+```json
+{
+  "benchmark_name": "MTRAG",
+  "check_only": true,
+  "expected_count": 252767,
+  "ids": ["827849752_115-357", "ibmcld_00001", "..."]
+}
+```
+Risposta attesa: gli `id` ricevuti che **non** sono ancora nell'indice di quel `benchmark_name`.
+```json
+{ "missing": ["ibmcld_00001"] }
+```
+Con `"missing": []` (oppure `{"complete": true}`) l'ingestion del benchmark viene saltata. Un server che non gestisce `check_only` riceve l'intero corpus a ogni valutazione.
+
+### `POST /ingest` — caricamento dei documenti
+
+Richiesta (una per lotto):
+```json
+{
+  "benchmark_name": "MTRAG",
+  "documents": [
+    { "id": "827849752_115-357", "text": "Egocentrism is the inability to ..." }
+  ]
+}
+```
+Il server deve rispondere `200` e **aggiungere** i documenti all'indice esistente di quel `benchmark_name`, ignorando gli `id` già presenti. Arrivano più richieste per lo stesso benchmark: un `/ingest` che ricrea l'indice a ogni chiamata conserverebbe solo l'ultimo lotto. Una risposta diversa da `200` (o un errore di rete) durante il caricamento **ferma la valutazione** con un errore, per non valutare il RAG su un indice incompleto: alla valutazione successiva il caricamento riprende dai documenti mancanti.
+
+### `POST /ask` — risposta a una domanda
+
+Richiesta:
+```json
+{
+  "question": "Who is ...?",
+  "top_k": 10,
+  "benchmark_name": "MultiHop-RAG",
+  "search_query": "Who is ...?",
+  "documents": ["testo documento 1", "testo documento 2"]
+}
+```
+- `benchmark_name`: indice in cui cercare (lo stesso usato in `/ingest`).
+- `question`: domanda da passare al generatore. Per MTRAG contiene anche la storia della conversazione (`[HISTORY] ... [NEW QUESTION] ...`).
+- `search_query`: testo da usare per il retrieval (per MTRAG include i turni precedenti).
+- `documents` (opzionale): se presente, il RAG **non** deve fare retrieval e deve rispondere usando solo questi testi. Viene inviato per rigenerare la risposta sui soli documenti rimasti dopo il filtro di *Similarity Threshold*.
+
+Risposta attesa:
+```json
+{
+  "answer": "Risposta generata",
+  "contexts": ["testo del primo documento recuperato", "..."]
+}
+```
+`contexts` può contenere stringhe oppure oggetti `{"text": "..."}`: sono i documenti che RAGAS usa per le metriche di retrieval e di faithfulness. In caso di errore il server risponde con uno status diverso da `200` e `{"error": "descrizione"}`. Una risposta diversa da `200`, non JSON o con `answer` mancante/vuoto non viene mai valutata come risposta: la query è marcata `RAG_ERROR` ed esclusa da RAGAS e dalle medie.
 
 ---
 
@@ -357,8 +452,10 @@ SuperRagBench/
 ├── .env.example                   # Template delle variabili d'ambiente DAVE/Keycloak
 ├── dave_client.py                 # Client API per motore DAVE (tRPC, sessioni e streaming)
 ├── ingest_dave.py                 # Script per caricamento e indicizzazione corpus su DAVE
+├── corpus_sources.py              # Corpus di ogni benchmark, condiviso da RAG locale e DAVE
 ├── .dave_collections.json         # Mapping benchmark -> UUID collezioni DAVE
 ├── .dave_docs_cache.json          # Cache locale per tracciamento documenti già indicizzati
+├── .dave_upload_jobs.json         # Job di upload DAVE da verificare (file falliti da ricaricare)
 │
 ├── webpage/                       # Core dell'applicazione (Dashboard e CLI)
 │   ├── app.py                     # Interfaccia web Streamlit (Evaluation ed Explore)
@@ -377,8 +474,10 @@ SuperRagBench/
 │   ├── Tutto_MTRAG_DAVE.jsonl     # MTRAG conversazionale in formato JSONL
 │   ├── Tutto_OHRBench_DAVE.jsonl  # OHRBench (OCR noise) in formato JSONL
 │   ├── Tutto_SQUAD.jsonl          # SQuAD-it in formato JSONL
-│   ├── extract_*.py               # Script di conversione dai formati grezzi a JSONL
-│   └── Report_Classificazione.md  # Report di classificazione qualitativa delle query
+│   ├── squad_corpus.json          # Corpus di SQuAD-it (paragrafi unici), generato da extract_squad.py
+│   └── extract_*.py               # Script di conversione dai formati grezzi a JSONL
+│
+├── test/                          # Test automatici (tassonomia, errori del RAG, pipeline DAVE)
 │
 ├── Benchmarks/                    # Dataset grezzi originali (non versionati, vedi "Scaricare i Benchmark")
 ├── valutazioni/                   # Report JSON archiviati con i risultati di ciascuna sessione

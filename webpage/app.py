@@ -1,6 +1,5 @@
 import json
 import random
-import requests
 import pandas as pd
 import streamlit as st
 
@@ -15,9 +14,7 @@ from taxonomy import metric_mean, metric_value, needs_reclassification
 from persistence import save_evaluation, list_evaluations, load_evaluation, delete_evaluation
 from benchmark_download import build_benchmarks_zip
 
-import importlib
 import dashboard as dash
-importlib.reload(dash)
 from dashboard import get_pattern_legend_html
 
 st.set_page_config(
@@ -113,6 +110,10 @@ def _value_color(v: float) -> str:
 def _fmt_score(v) -> str:
     # metrics not computed by RAGAS are None and shown as N/A
     return "N/A" if v is None else f"{v:.2f}"
+
+def _fmt_metric(rep: dict, key: str) -> str:
+    # single-query score, N/A when RAGAS did not compute it
+    return _fmt_score(metric_value(rep, key))
 
 def _short_source(source: str) -> str:
     # get short name from dict, if any
@@ -241,6 +242,7 @@ with st.sidebar:
         if st.button("Start Evaluation", type="primary", disabled=not can_start, width='stretch'):
             st.session_state.running = True
             st.session_state.results = []
+            st.session_state.pop("eval_error", None)
             st.session_state.selected_files = selected_files
             st.session_state.sample_size_param = sample_size_param
             st.session_state.query_selection_mode = query_selection_mode
@@ -271,6 +273,9 @@ if not st.session_state.running and not st.session_state.results:
 tab_evaluation, tab_explore = st.tabs(["🔬 Evaluation", "📊 Explore"])
 
 with tab_evaluation:
+    if not st.session_state.running and st.session_state.get("eval_error"):
+        st.error(f"❌ Evaluation failed, nothing was saved: {st.session_state.eval_error}"
+                 + ("\n\nShowing the latest saved evaluation." if st.session_state.results else ""))
     if not st.session_state.running and not st.session_state.results:
         st.markdown(dash.get_welcome_html(), unsafe_allow_html=True)
 
@@ -297,8 +302,8 @@ with tab_evaluation:
         for file_name in files_to_run:
             path = RUN_DIR / file_name
             if path.exists():
-                skip_ctx = "OHRBench" not in file_name
-                elements = _load_benchmark_jsonl(path, skip_context=skip_ctx)
+                # the gold "context" is never sent to the RAG: every benchmark retrieves over its corpus
+                elements = _load_benchmark_jsonl(path, skip_context=True)
                 if st.session_state.get("query_selection_mode") == "Repeat Previous":
                     if previous_eval_ids:
                         filtered_elements = [e for e in elements if e["id"] in previous_eval_ids]
@@ -378,25 +383,28 @@ with tab_evaluation:
                 )
             # if there is an error, show the message and reset results
             except RuntimeError as e:
-                st.error(str(e))
+                # kept in session state: st.rerun() below would wipe a plain st.error
+                st.session_state.eval_error = str(e)
                 ui_reports = []
 
         progress_bar.progress(1.0)
         st.session_state.results = ui_reports
 
-        # save evaluation automatically
-        saved = save_evaluation(
-            results=ui_reports,
-            model=ollama_model,
-            endpoint=rag_base_url,
-            threshold=threshold,
-            sample_size=st.session_state.get('sample_size_param', 3),
-            benchmarks_used=files_to_run,
-            rag_engine=motore_rag,
-            name=st.session_state.get('eval_name', ''),
-        )
-        st.session_state.last_saved_id = saved['id']
-        st.session_state.current_eval_name = saved['name']
+        # save evaluation automatically, only if it produced results: an empty
+        # evaluation would otherwise become "the latest" shown at startup
+        if ui_reports:
+            saved = save_evaluation(
+                results=ui_reports,
+                model=ollama_model,
+                endpoint=rag_base_url,
+                threshold=threshold,
+                sample_size=st.session_state.get('sample_size_param', 3),
+                benchmarks_used=files_to_run,
+                rag_engine=motore_rag,
+                name=st.session_state.get('eval_name', ''),
+            )
+            st.session_state.last_saved_id = saved['id']
+            st.session_state.current_eval_name = saved['name']
 
         st.session_state.running = False
         status_text.empty()
@@ -428,8 +436,11 @@ with tab_evaluation:
         ragas_stats = reports[0].get("_ragas_stats", {}) if reports else {}
         failed_queries = sum(1 for r in reports if r.get("ragas_fallita", False))
         truncated_contexts = ragas_stats.get("contesti_troncati", 0)
-        if failed_queries > 0 or truncated_contexts > 0:
+        rag_error_queries = sum(1 for r in reports if r.get("rag_error"))
+        if failed_queries > 0 or truncated_contexts > 0 or rag_error_queries > 0:
             msg_parts = []
+            if rag_error_queries > 0:
+                msg_parts.append(f"**{rag_error_queries}/{len(reports)}** queries not answered by the RAG (RAG Error: not evaluated, excluded from the averages)")
             if truncated_contexts > 0:
                 msg_parts.append(f"**{truncated_contexts}** truncated contexts (exceeded model limit)")
             if failed_queries > 0:
@@ -437,6 +448,25 @@ with tab_evaluation:
             st.markdown('<div style="margin-top: 1.5rem; margin-bottom: 1rem;">', unsafe_allow_html=True)
             st.warning("⚠️ " + " · ".join(msg_parts) + ". The averages might not reflect all queries.")
             st.markdown('</div>', unsafe_allow_html=True)
+
+        # time spent per phase (only evaluations run after the timings were added)
+        timings = ragas_stats.get("tempi")
+        if timings:
+            def _fmt(sec):
+                m, s = divmod(round(sec), 60)
+                h, m = divmod(m, 60)
+                return f"{h}h {m:02d}m {s:02d}s" if h else f"{m}m {s:02d}s" if m else f"{sec:.1f}s"
+            ingest, queries = timings.get("ingestion", {}), timings.get("query", {})
+            with st.expander(f"⏱️ Timings — total {_fmt(timings.get('totale', 0))}"):
+                st.markdown(f"**Ingestion** {_fmt(sum(ingest.values()))} · **RAG queries** {_fmt(sum(queries.values()))}"
+                            f" · **RAGAS** {_fmt(timings.get('ragas', 0))}")
+                rows = []
+                for src in sorted(set(ingest) | set(queries)):
+                    n_q = sum(1 for r in reports if r.get("source") == src)
+                    q = queries.get(src, 0)
+                    rows.append({"Benchmark": _short_source(src), "Ingestion": _fmt(ingest.get(src, 0)),
+                                 "RAG queries": _fmt(q), "Per query": f"{q / n_q if n_q else 0:.1f}s"})
+                st.table(rows)
 
         # if there are multiple benchmarks, show breakdown
         sources = df['source'].unique()
@@ -518,13 +548,13 @@ with tab_evaluation:
             st.info("Nessuna query corrisponde ai filtri selezionati.")
             
         for rep in filtered_reports:
-            corr = rep.get('correctness_voto', 0)
+            corr = metric_value(rep, 'correctness_voto')
             v_label = rep.get('verdict_label', '')
             pattern = rep.get('error_pattern_label', '')
             pattern_suffix = f"  |  {pattern}" if rep.get('verdict') == 'wrong' else ""
             if rep.get('verdict') == 'partial' and rep.get('error_cause_label'):
                 pattern_suffix = f"  |  cause: {rep['error_cause_label']}"
-            label = f"{rep['query_id']}  |  {rep['source']}  |  {v_label}{pattern_suffix}  |  Correctness: {corr:.2f}"
+            label = f"{rep['query_id']}  |  {rep['source']}  |  {v_label}{pattern_suffix}  |  Correctness: {_fmt_score(corr)}"
             with st.expander(label):
                 st.markdown("**Question**")
                 st.code(rep['domanda'], language=None)
@@ -532,7 +562,11 @@ with tab_evaluation:
                 c1, c2 = st.columns(2)
                 with c1:
                     st.markdown("**RAG Answer**")
-                    st.info(rep['risposta_rag'])
+                    if rep.get('rag_error'):
+                        # the RAG failed: there is no answer, show the infrastructure error
+                        st.error(f"🔌 RAG Error: {rep['rag_error']}")
+                    else:
+                        st.info(rep['risposta_rag'])
                 with c2:
                     st.markdown("**Gold Answer**")
                     st.success(rep['gold'])
@@ -566,8 +600,11 @@ with tab_evaluation:
 
         # queries not evaluated by RAGAS have fake 0.0 scores: keep them out of best/worst
         evaluated = [r for r in reports if r.get('verdict') != 'not_evaluated']
-        worst_query = min(evaluated, key=lambda x: x['correctness_voto'] + x['retrieval_voto'], default=None)
-        best_query = max(evaluated, key=lambda x: x['correctness_voto'] + x['retrieval_voto'], default=None)
+        # ranked by Correctness, then Precision (metrics not computed count as 0)
+        def _rank(x):
+            return ((metric_value(x, 'correctness_voto') or 0), (metric_value(x, 'retrieval_voto') or 0))
+        worst_query = min(evaluated, key=_rank, default=None)
+        best_query = max(evaluated, key=_rank, default=None)
 
         if worst_query and "llm_advice" not in st.session_state:
             with st.spinner("🧠 AI RAG Expert is writing the analysis report..."):
@@ -605,13 +642,13 @@ WORST QUERY:
   Question: {worst_query['domanda']}
   RAG Answer: {worst_query['risposta_rag'][:300]}
   Gold Answer: {worst_query['gold']}
-  Scores: Correctness={worst_query['correctness_voto']:.2f}, Faithfulness={worst_query['faithfulness_voto']:.2f}, Precision={worst_query['retrieval_voto']:.2f}
+  Scores: Correctness={_fmt_metric(worst_query, 'correctness_voto')}, Faithfulness={_fmt_metric(worst_query, 'faithfulness_voto')}, Precision={_fmt_metric(worst_query, 'retrieval_voto')}
 
 BEST QUERY:
   Question: {best_query['domanda']}
   RAG Answer: {best_query['risposta_rag'][:300]}
   Gold Answer: {best_query['gold']}
-  Scores: Correctness={best_query['correctness_voto']:.2f}, Faithfulness={best_query['faithfulness_voto']:.2f}, Precision={best_query['retrieval_voto']:.2f}
+  Scores: Correctness={_fmt_metric(best_query, 'correctness_voto')}, Faithfulness={_fmt_metric(best_query, 'faithfulness_voto')}, Precision={_fmt_metric(best_query, 'retrieval_voto')}
 
 Write a clean, easy-to-read Markdown report with these sections:
 
@@ -769,8 +806,9 @@ with tab_explore:
                 row = {"Query ID": qid, "Benchmark": _short_source(meta["source"])}
                 for ev in selected_for_compare:
                     res = query_results_map[qid].get(ev["name"])
-                    corr = res.get("correctness_voto") if res else None
-                    faith = res.get("faithfulness_voto") if res else None
+                    # metric_value: metrics not computed (RAGAS failure, RAG Error) stay empty, not 0.00
+                    corr = metric_value(res, "correctness_voto") if res else None
+                    faith = metric_value(res, "faithfulness_voto") if res else None
                     pattern = res.get("error_pattern_label") if res else None
                     try:
                         row[f"Corr ({ev['name']})"] = round(float(corr), 2) if corr is not None else None
@@ -838,17 +876,18 @@ with tab_explore:
 
                                 # metrics mini-cards
                                 metrics_data = [
-                                    ("C.Prec", res.get("retrieval_voto", 0)),
-                                    ("C.Rec", res.get("recall_voto", 0)),
-                                    ("Faith", res.get("faithfulness_voto", 0)),
-                                    ("Corr", res.get("correctness_voto", 0)),
-                                    ("Relev", res.get("relevancy_voto", 0)),
+                                    ("C.Prec", "retrieval_voto"),
+                                    ("C.Rec", "recall_voto"),
+                                    ("Faith", "faithfulness_voto"),
+                                    ("Corr", "correctness_voto"),
+                                    ("Relev", "relevancy_voto"),
                                 ]
                                 metrics_html = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:0.8rem;">'
-                                for m_label, m_val in metrics_data:
-                                    m_val_f = float(m_val) if pd.notna(m_val) else 0.0
-                                    m_color = {"green": "#00E676", "yellow": "#FFC400", "red": "#FF1744"}.get(_value_color(m_val_f), "#a2a2c0")
-                                    metrics_html += f'<span style="background:rgba(255,255,255,0.05);border-radius:8px;padding:4px 8px;font-size:0.75rem;">{m_label}: <strong style="color:{m_color}">{m_val_f:.2f}</strong></span>'
+                                for m_label, m_key in metrics_data:
+                                    m_val = metric_value(res, m_key)
+                                    m_text = _fmt_score(m_val)
+                                    m_color = {"green": "#00E676", "yellow": "#FFC400", "red": "#FF1744"}.get(_value_color(m_val), "#a2a2c0")
+                                    metrics_html += f'<span style="background:rgba(255,255,255,0.05);border-radius:8px;padding:4px 8px;font-size:0.75rem;">{m_label}: <strong style="color:{m_color}">{m_text}</strong></span>'
                                 metrics_html += '</div>'
                                 st.markdown(metrics_html, unsafe_allow_html=True)
 
@@ -861,7 +900,10 @@ with tab_explore:
                                 ), unsafe_allow_html=True)
 
                                 st.markdown("**RAG Answer**")
-                                st.info(res.get("risposta_rag", "N/A"))
+                                if res.get("rag_error"):
+                                    st.error(f"🔌 RAG Error: {res['rag_error']}")
+                                else:
+                                    st.info(res.get("risposta_rag", "N/A"))
 
                                 with st.expander("📄 Retrieved Documents"):
                                     st.text(res.get("docs", "No documents available"))
@@ -876,11 +918,13 @@ with tab_explore:
                             for d_col, m_key, m_label in zip(delta_cols,
                                 ["retrieval_voto", "recall_voto", "faithfulness_voto", "correctness_voto", "relevancy_voto"],
                                 ["C. Precision", "C. Recall", "Faithfulness", "Correctness", "Relevancy"]):
-                                val_a = float(res_a.get(m_key, 0) or 0)
-                                val_b = float(res_b.get(m_key, 0) or 0)
-                                delta = val_b - val_a
+                                val_a = metric_value(res_a, m_key)
+                                val_b = metric_value(res_b, m_key)
                                 with d_col:
-                                    st.metric(m_label, f"{val_b:.2f}", f"{delta:+.2f}")
+                                    if val_a is None or val_b is None:
+                                        st.metric(m_label, _fmt_score(val_b))
+                                    else:
+                                        st.metric(m_label, f"{val_b:.2f}", f"{val_b - val_a:+.2f}")
                 else:
                     st.info("No shared queries found between the selected evaluations. Make sure the evaluations were run on overlapping datasets.")
 

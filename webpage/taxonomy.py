@@ -8,7 +8,7 @@ from collections import Counter
 
 # bump when rules, thresholds or pattern ids change: saved evaluations
 # with a different version are reclassified when loaded
-TAXONOMY_VERSION = 3
+TAXONOMY_VERSION = 4
 
 THRESHOLDS = {
     "correct": 0.70,  # Answer Correctness >= correct -> CORRECT
@@ -69,6 +69,10 @@ PATTERNS = {
     "EVAL_FAIL": ("Evaluation Failure",
                   "RAGAS could not compute Answer Correctness (judge error, timeout or metric not selected). "
                   "This is a failure of the evaluator, not of the RAG."),
+    "RAG_ERROR": ("RAG Error",
+                  "The RAG under test did not answer (HTTP error, timeout, empty answer or exception): "
+                  "the query is an infrastructure failure, not an answer, and is excluded from RAGAS and the averages. "
+                  "Check that the RAG server and its LLM are running."),
 }
 
 _VERDICT_LABELS = {
@@ -77,6 +81,8 @@ _VERDICT_LABELS = {
     "wrong": "❌ Wrong",
     "not_evaluated": "⚪ Not Evaluated",
 }
+# RAG errors keep the 'not_evaluated' verdict (no answer to judge) but get their own label
+RAG_ERROR_LABEL = "🔌 RAG Error"
 
 
 # ── metric availability ───────────────────────────────────────────
@@ -169,6 +175,7 @@ def classify_query_verdict(report: dict) -> dict:
 
     Returns a dict with:
       - verdict: 'correct' | 'partial' | 'wrong' | 'not_evaluated'
+        (also for RAG_ERROR: the RAG did not answer, report field 'rag_error')
       - verdict_label: human-readable label with emoji
       - error_pattern: pattern ID (e.g. 'RET_FAIL'); PARTIAL / REFUSAL for those answers
       - error_pattern_label: human-readable pattern name
@@ -184,6 +191,18 @@ def classify_query_verdict(report: dict) -> dict:
     faith = metric_value(report, "faithfulness_voto")
     relevancy = metric_value(report, "relevancy_voto")
 
+    if report.get("rag_error"):
+        # the RAG did not answer: nothing to judge, the metrics were never computed
+        return {
+            "verdict": "not_evaluated",
+            "verdict_label": RAG_ERROR_LABEL,
+            "error_pattern": "RAG_ERROR",
+            "error_pattern_label": PATTERNS["RAG_ERROR"][0],
+            "error_cause": None,
+            "error_cause_label": None,
+            "error_reason": f"{PATTERNS['RAG_ERROR'][1]} Error: {report['rag_error']}",
+            "taxonomy_version": TAXONOMY_VERSION,
+        }
     if corr is None:
         # without Correctness no verdict can be given
         verdict, pattern, cause = "not_evaluated", "EVAL_FAIL", None
@@ -225,7 +244,7 @@ def aggregate_diagnosis(reports: list, min_share: float = 0.10) -> dict:
 
     Same rules as the per-query verdicts, so the global diagnosis can never
     contradict them. Returns:
-      - evaluated: queries with a verdict (EVAL_FAIL excluded)
+      - evaluated: queries with a verdict (EVAL_FAIL and RAG_ERROR excluded)
       - correct: number of correct answers
       - causes: [(pattern_id, count, share_of_evaluated)] for causes above min_share,
         most frequent first; partial and refused answers count under their root cause

@@ -1,7 +1,6 @@
 streamlit
 pandas
 requests
-beautifulsoup4
 sentence-transformers
 ragas
 langchain-ollama

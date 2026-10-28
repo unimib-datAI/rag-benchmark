@@ -7,6 +7,7 @@ in the project root.
 """
 import gzip
 import shutil
+import sys
 import tempfile
 import time
 import zipfile
@@ -17,10 +18,14 @@ import requests
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT_DIR / "Benchmarks_download.zip"
 
+sys.path.append(str(ROOT_DIR))
+from corpus_sources import OHR_VERSION
+
 _MTRAG_CORPUS = "https://github.com/IBM/mt-rag-benchmark/raw/main/corpora/document_level/{0}.jsonl.zip"
 
-# (label, url, destination in the zip, kind)
+# (label, url, destination in the zip, kind[, only])
 # kind: "file" copied as is, "gunzip" decompressed, "unzip" extracted under the destination folder
+# only: for "unzip", extract just the members under this folder of the archive
 SOURCES = [
     ("CRAG", "https://github.com/facebookresearch/CRAG/raw/refs/heads/main/data/crag_task_1_and_2_dev_v4.jsonl.bz2",
      "Benchmarks/CRAG/data/crag_task_1_and_2_dev_v4.jsonl.bz2", "file"),
@@ -38,6 +43,8 @@ SOURCES = [
       for key in ("clapnq", "cloud", "fiqa", "govt")],
     ("OHRBench", "https://github.com/opendatalab/OHR-Bench/raw/main/data/qas.json",
      "Benchmarks/OHR-Bench/data/qas.json", "file"),
+    ("OHRBench corpus", "https://huggingface.co/datasets/opendatalab/OHR-Bench/resolve/main/retrieval.zip",
+     "Benchmarks/OHR-Bench/data/retrieval_base/", "unzip", f"{OHR_VERSION}/"),
     ("SQuAD-it", "https://github.com/crux82/squad-it/raw/master/SQuAD_it-test.json.gz",
      "Benchmarks/squad-it/SQuAD_it-test.json", "gunzip"),
 ]
@@ -68,7 +75,7 @@ def _entry(name):
     return info
 
 
-def _add_to_zip(zf, src, dest, kind):
+def _add_to_zip(zf, src, dest, kind, only=None):
     if kind == "file":
         # already compressed files (.bz2) are stored, the others deflated
         compress = zipfile.ZIP_STORED if dest.endswith(".bz2") else zipfile.ZIP_DEFLATED
@@ -81,6 +88,8 @@ def _add_to_zip(zf, src, dest, kind):
             for member in inner.infolist():
                 name = member.filename.lstrip("/")
                 if member.is_dir() or not name or name.startswith("__MACOSX"):
+                    continue
+                if only and not name.startswith(only):
                     continue
                 name = name.translate(_INVALID_NAME_CHARS)
                 with inner.open(member) as fin, zf.open(_entry(dest + name), "w", force_zip64=True) as fout:
@@ -101,7 +110,7 @@ def build_benchmarks_zip(output=DEFAULT_OUTPUT, progress=None):
     try:
         with tempfile.TemporaryDirectory() as tmp, \
                 zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-            for step, (label, url, dest, kind) in enumerate(SOURCES):
+            for step, (label, url, dest, kind, *only) in enumerate(SOURCES):
                 src = Path(tmp) / f"source_{step}"
 
                 def on_bytes(done, total, step=step, label=label):
@@ -112,7 +121,7 @@ def build_benchmarks_zip(output=DEFAULT_OUTPUT, progress=None):
                     _download(url, src, on_bytes)
                 except requests.RequestException as e:
                     raise RuntimeError(f"Download of {label} failed ({url}): {e}") from e
-                _add_to_zip(zf, src, dest, kind)
+                _add_to_zip(zf, src, dest, kind, *only)
                 src.unlink()
         partial.replace(output)
     finally:

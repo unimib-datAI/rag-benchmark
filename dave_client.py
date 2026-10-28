@@ -87,6 +87,10 @@ class TRPCError(RuntimeError):
     pass
 
 
+class DaveEmptyAnswerError(RuntimeError):
+    """DAVE ha chiuso lo stream di generazione senza testo (es. timeout del suo LLM con HTTP 200)."""
+
+
 class DaveClient:
     """Client per interagire con l'istanza DAVE (Retrieval & Generation via tRPC / Next.js API)."""
 
@@ -169,25 +173,43 @@ class DaveClient:
     # --- RETRIEVAL & GENERATION APIs ---
 
     def retrieve_chunks(
-        self, query: str, collection_id: str, top_k: int = 5
+        self, query: str, collection_id: str, top_k: int = 10
     ) -> List[Dict[str, Any]]:
-        """Esegue il retrieval su DAVE per la collezione indicata e restituisce i chunk più rilevanti."""
-        return self._trpc_mutation(
+        """Esegue il retrieval su DAVE e restituisce al massimo top_k chunk, nell'ordine di DAVE.
+
+        search.mostSimilarDocuments non accetta un parametro per il numero di risultati
+        (topK, k, limit, size, top_k, numResults, maxResults, n vengono ignorati: verificato
+        sul server) e restituisce i chunk raggruppati per documento. Qui i chunk vengono
+        appiattiti, un elemento per chunk ({"id", "title", "chunks": [chunk]}), e tagliati a
+        top_k, così l'unità di contesto e il top_k coincidono con quelli del RAG locale."""
+        docs = self._trpc_mutation(
             "search.mostSimilarDocuments",
             {
                 "query": query,
                 "collectionId": collection_id,
                 "retrievalMethod": "full",
             },
-        )
+        ) or []
+        chunks: List[Dict[str, Any]] = []
+        for doc in docs:
+            for chunk in doc.get("chunks", []):
+                chunks.append({
+                    "id": chunk.get("id", doc.get("id")),
+                    "title": doc.get("title", "Doc"),
+                    # text_emb (embedding del chunk) non serve: lo si scarta
+                    "chunks": [{"id": chunk.get("id"), "text": chunk.get("text", "")}],
+                })
+        return chunks[:top_k]
 
     def build_system_prompt(
-        self, docs: List[Dict[str, Any]], question: str, max_docs: int = 5
+        self, docs: List[Dict[str, Any]], question: str, max_docs: Optional[int] = None
     ) -> str:
-        """Costruisce il system prompt inserendo i frammenti dei documenti recuperati."""
+        """Costruisce il system prompt inserendo i frammenti dei documenti recuperati.
+        Con max_docs=None usa tutti i documenti passati: chi chiama passa esattamente
+        i documenti da usare (gli stessi che poi valuta RAGAS)."""
         context_parts = []
         chunk_num = 0
-        for i, doc in enumerate(docs[:max_docs]):
+        for i, doc in enumerate(docs if max_docs is None else docs[:max_docs]):
             lines = []
             for chunk in doc.get("chunks", []):
                 chunk_num += 1
@@ -236,8 +258,14 @@ class DaveClient:
 
         # Pulizia dei marker interni di DAVE
         visible = STEP_RE.sub("", raw)
-        visible = CTX_RE.sub("", visible)
-        return visible.strip()
+        visible = CTX_RE.sub("", visible).strip()
+        # DAVE risponde 200 e chiude lo stream vuoto quando il suo LLM va in timeout:
+        # non è una risposta da valutare ma un errore dell'infrastruttura
+        if not visible:
+            raise DaveEmptyAnswerError(
+                f"DAVE ha restituito una risposta vuota ({len(raw)} caratteri grezzi nello stream)"
+            )
+        return visible
 
 
 def main():

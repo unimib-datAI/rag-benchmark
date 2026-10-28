@@ -285,15 +285,14 @@ def _load_dataset(benchmarks, sample_size, selection_mode):
 
         files_to_run.append(filename)
         items = []
-        skip_ctx = name != "OHRBENCH"
         with open(path, 'r', encoding='utf-8-sig') as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 record = json.loads(line)
-                if skip_ctx:
-                    record.pop('context', None)
+                # the gold "context" is never sent to the RAG: every benchmark retrieves over its corpus
+                record.pop('context', None)
                 items.append(record)
 
         if selection_mode == "Repeat Previous" and repeat_ids:
@@ -352,6 +351,28 @@ def _tps_callback(total_tokens, input_tokens, output_tokens, max_input, tps):
 
 # ── results display ───────────────────────────────────────────────
 
+def _fmt_seconds(sec):
+    m, s = divmod(round(sec), 60)
+    h, m = divmod(m, 60)
+    return f"{h}h {m:02d}m {s:02d}s" if h else f"{m}m {s:02d}s" if m else f"{sec:.1f}s"
+
+
+def _print_timings(results, timings):
+    """Seconds per phase measured by evaluator.py (ingestion, RAG queries, RAGAS)."""
+    if not timings:
+        return
+    ingest, queries = timings.get("ingestion", {}), timings.get("query", {})
+    print(f"\n⏱  Tempi: totale {_fmt_seconds(timings.get('totale', 0))}"
+          f" | ingestion {_fmt_seconds(sum(ingest.values()))}"
+          f" | interrogazione RAG {_fmt_seconds(sum(queries.values()))}"
+          f" | RAGAS {_fmt_seconds(timings.get('ragas', 0))}")
+    for src in sorted(set(ingest) | set(queries)):
+        n_q = sum(1 for r in results if r.get("source") == src)
+        q = queries.get(src, 0)
+        print(f"  {src:<14} ingestion {_fmt_seconds(ingest.get(src, 0)):>12}"
+              f" | query {_fmt_seconds(q):>12} ({q / n_q if n_q else 0:.1f}s/domanda)")
+
+
 def _print_results(results):
     n = len(results)
     if n == 0:
@@ -360,9 +381,15 @@ def _print_results(results):
 
     # RAGAS stats (attached to first result by evaluator.py)
     stats = results[0].get("_ragas_stats", {})
+    # queries the RAG did not answer (RAG_ERROR): never sent to RAGAS, excluded from the averages
+    rag_errors = sum(1 for r in results if r.get("rag_error"))
     if stats:
         print(f"\n📈 Copertura RAGAS: {stats.get('riuscite', n)}/{stats.get('totali', n)} query valutate con successo"
-              f" | {stats.get('fallite', 0)} fallite (NaN) | {stats.get('contesti_troncati', 0)} contesti protetti da troncamento")
+              f" | {stats.get('fallite', 0)} fallite (NaN) | {stats.get('contesti_troncati', 0)} contesti protetti da troncamento"
+              + (f" | {rag_errors} errori del RAG (non valutate)" if rag_errors else ""))
+    if rag_errors:
+        print(f"⚠  {rag_errors}/{n} query senza risposta dal RAG (RAG_ERROR): escluse da RAGAS e dalle medie")
+    _print_timings(results, stats.get("tempi"))
 
     # aggregate averages, only over the queries where RAGAS computed each metric
     print("\n📊 Medie Aggregate (5 Metriche RAGAS):")
@@ -373,7 +400,7 @@ def _print_results(results):
     print(f"  Answer Relevancy:    {_score(metric_mean(results, 'relevancy_voto'))}")
 
     # verdict and error pattern distribution (same classification as the UI)
-    verdicts = Counter(r.get("verdict", "?") for r in results)
+    verdicts = Counter("rag_error" if r.get("rag_error") else r.get("verdict", "?") for r in results)
     patterns = Counter(r.get("error_pattern", "?") for r in results if r.get("verdict") == "wrong")
     partial_causes = Counter(r.get("error_cause") or "UNKNOWN" for r in results if r.get("verdict") == "partial")
     print("\n⚖️  Verdetti: " + " | ".join(f"{v}: {c}" for v, c in verdicts.most_common()))
@@ -409,7 +436,7 @@ def _print_results(results):
     for r in results:
         src = r.get("source", "?")
         short_src = src.split('-')[0][:14] if '-' in src else src[:14]
-        status = "FALLITA" if r.get("ragas_fallita") else "OK"
+        status = "ERR RAG" if r.get("rag_error") else "FALLITA" if r.get("ragas_fallita") else "OK"
         print(
             f"  {r.get('query_id', '?')[:16]:<16} {short_src:<14}"
             f" {_score(metric_value(r, 'correctness_voto'), cw)}"
@@ -561,7 +588,10 @@ def main():
     # Visualizzazione dei risultati
     _print_results(results)
 
-    # Salvataggio su disco
+    # Salvataggio su disco (mai una valutazione vuota: diventerebbe "l'ultima" mostrata dalla UI)
+    if not results:
+        print("⚠  Nessun risultato: valutazione non salvata.")
+        sys.exit(1)
     try:
         eval_data = save_evaluation(
             results=results,

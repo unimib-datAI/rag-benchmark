@@ -112,6 +112,8 @@ PATTERN_LEGEND = [
      "Categoria tecnica"),
     ("EVAL_FAIL", "Evaluation Failure", "RAGAS non è riuscito a calcolare la Correctness (errore del giudice, timeout o metrica non selezionata): la query non viene giudicata.",
      "Errore del valutatore, non del RAG: esclusa dalla distribuzione degli errori"),
+    ("RAG_ERROR", "RAG Error", "Il RAG non ha risposto (errore HTTP, timeout, risposta vuota o eccezione): non c'è una risposta da giudicare, la query non viene inviata a RAGAS ed è esclusa dalle medie.",
+     "Errore dell'infrastruttura, non una risposta sbagliata: esclusa dalla distribuzione degli errori"),
 ]
 
 def get_verdict_summary_html(reports: list) -> str:
@@ -120,6 +122,9 @@ def get_verdict_summary_html(reports: list) -> str:
     verdicts = Counter(r.get('verdict', 'wrong') for r in reports)
     correct, partial, not_eval = verdicts['correct'], verdicts['partial'], verdicts['not_evaluated']
     wrong = total - correct - partial - not_eval
+    # not evaluated because the RAG itself failed (RAG_ERROR), not the judge
+    rag_err = sum(1 for r in reports if r.get('error_pattern') == 'RAG_ERROR')
+    not_eval_text = f"{not_eval} (RAG errors: {rag_err})" if rag_err else f"{not_eval}"
     pattern_counts = Counter(r.get('error_pattern', 'UNKNOWN') for r in reports if r.get('verdict', 'wrong') == 'wrong')
     partial_causes = Counter(r.get('error_cause') or 'UNKNOWN' for r in reports if r.get('verdict') == 'partial')
 
@@ -145,13 +150,13 @@ def get_verdict_summary_html(reports: list) -> str:
             <div class="vs-seg vs-correct" style="width:{pct_c}%;" title="Correct: {correct}"></div>
             <div class="vs-seg vs-partial" style="width:{pct_p}%;" title="Partial: {partial}"></div>
             <div class="vs-seg vs-wrong"   style="width:{pct_w}%;" title="Wrong: {wrong}"></div>
-            {f'<div class="vs-seg vs-noteval" style="width:{pct_n}%;" title="Not Evaluated: {not_eval}"></div>' if not_eval else ''}
+            {f'<div class="vs-seg vs-noteval" style="width:{pct_n}%;" title="Not Evaluated: {not_eval_text}"></div>' if not_eval else ''}
         </div>
         <div class="vs-labels">
             <span class="vs-label"><span class="vs-dot" style="background:#00E676;"></span>Correct: {correct}</span>
             <span class="vs-label"><span class="vs-dot" style="background:#FFC400;"></span>Partial: {partial}</span>
             <span class="vs-label"><span class="vs-dot" style="background:#FF1744;"></span>Wrong: {wrong}</span>
-            {f'<span class="vs-label"><span class="vs-dot" style="background:#94A3B8;"></span>Not Evaluated: {not_eval}</span>' if not_eval else ''}
+            {f'<span class="vs-label"><span class="vs-dot" style="background:#94A3B8;"></span>Not Evaluated: {not_eval_text}</span>' if not_eval else ''}
         </div>
         <div class="vs-patterns">
             <span class="vs-patterns-title">Error Patterns:</span>
@@ -165,7 +170,7 @@ def get_pattern_legend_html() -> str:
     """Returns the error pattern legend cards grid."""
     legend_rows_html = ""
     for code, title, desc, ref in PATTERN_LEGEND:
-        tag_class = {"CORRECT": "vp-tag-green", "PARTIAL": "vp-tag-yellow", "EVAL_FAIL": "vp-tag-grey"}.get(code, "vp-tag-red")
+        tag_class = {"CORRECT": "vp-tag-green", "PARTIAL": "vp-tag-yellow", "EVAL_FAIL": "vp-tag-grey", "RAG_ERROR": "vp-tag-grey"}.get(code, "vp-tag-red")
         legend_rows_html += f'<div class="vs-legend-item"><span class="vp-tag {tag_class}">{code}</span><div class="vs-legend-desc"><strong>{title}</strong>: {desc}<div class="vs-legend-ref">📚 {ref}</div></div></div>'
 
     return f'<div class="vs-legend-grid">{legend_rows_html}</div>'

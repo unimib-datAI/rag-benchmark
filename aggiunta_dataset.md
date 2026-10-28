@@ -1,6 +1,13 @@
 # Guida: Come Aggiungere un Nuovo Dataset a SuperBenchmark
 
-Per aggiungere un nuovo benchmark scaricato da GitHub (o da un'altra fonte), bastano **tre passaggi**.
+Per aggiungere un nuovo benchmark scaricato da GitHub (o da un'altra fonte) servono **quattro passaggi**: il terzo solo se usi DAVE.
+
+Ogni benchmark fornisce a SuperBenchmark due cose distinte:
+
+| Cosa | Dove | A cosa serve |
+| :--- | :--- | :--- |
+| **Domande e risposte** | `Run/Tutto_NUOVO.jsonl` (Step 1) | Le domande poste al RAG e le *gold answer* con cui RAGAS confronta le risposte. Il campo `context` contiene i documenti corretti (la "soluzione") e resta come riferimento: non viene mai dato al RAG. |
+| **Corpus** | funzione in `corpus_sources.py` (Step 2) | I documenti in cui il RAG cerca. Lo stesso corpus viene caricato sul RAG locale e su DAVE. |
 
 ---
 
@@ -17,39 +24,66 @@ Il tuo script deve generare un file `.jsonl` in cui ogni riga è un oggetto JSON
 ```
 
 - `id`: identificativo univoco della query (es. `leg_0001`, `crag_001`).
-- `source`: nome identificativo del benchmark.
+- `source`: nome identificativo del benchmark. **Deve essere lo stesso nome usato negli Step 2 e 3.**
 - `query_type`: tipologia della domanda (es. `Estrazione_Semplice`, `Multi_Hop`, `Confronto_Aggregazione`).
-- `context`: combina i documenti necessari in un'unica stringa delimitata da tag (es. `[Doc 1] Testo... [Doc 2] Testo...`).
+- `question`: la domanda posta al RAG.
+- `context`: i documenti corretti per la domanda (la soluzione), in un'unica stringa delimitata da tag (es. `[Doc 1] Testo... [Doc 2] Testo...`). È solo un riferimento: il RAG cerca nel corpus dello Step 2.
 - `gold_answer`: risposta corretta di riferimento (*ground truth*).
 
 ---
 
-## Step 2: Ingestione Documenti su DAVE (`ingest_dave.py`)
+## Step 2: Il Corpus da Indicizzare (`corpus_sources.py`)
 
-Se utilizzi il motore RAG locale, il file JSONL generato allo Step 1 è sufficiente.
-Se invece utilizzi **DAVE**, i documenti di contesto devono essere pre-caricati e indicizzati sul server.
+Il RAG non deve cercare tra le sole soluzioni (troverebbe sempre il documento giusto): deve cercare nel **corpus completo** del benchmark, che contiene anche documenti non pertinenti.
 
-Apri il file `ingest_dave.py` e, nella funzione `main()`, aggiungi il caricamento del tuo nuovo corpus:
+Apri `corpus_sources.py`, scrivi una funzione che indichi dove si trovano i documenti e come leggerli, e registrala nel dizionario `_CORPORA` con lo stesso nome del campo `source`:
 
 ```python
-# Esempio per il nuovo dataset
-print("\n[NuovoBenchmark] Ingesting...")
-# Crea la collezione (se non esiste)
-col_id = client.create_collection("NuovoBenchmark")
+def _nuovo():
+    corpus_dir = BENCHMARKS_DIR / "NuovoBenchmark" / "documenti"
+    def docs():
+        for path in sorted(corpus_dir.glob("*.txt")):
+            yield path.stem, path.read_text(encoding="utf-8")   # (id, testo) di ogni documento
+    return [corpus_dir], docs   # file o cartelle del corpus, usati per controllare che esistano
 
-# Prepara la tua lista di documenti (estratti dal corpus grezzo)
-# Formato richiesto da DAVE: [{"title": "NomeDoc", "text": "Testo del documento", "fileName": "doc_id.txt"}]
-nuovi_docs = [...] 
 
-# Invia i documenti al server usando l'upload a lotti integrato
-upload_docs_in_batches(client, col_id, nuovi_docs, "NuovoBenchmark")
+_CORPORA = {
+    "MultiHop-RAG": _multihop,
+    ...
+    # ⬇️ AGGIUNGI IL TUO BENCHMARK QUI ⬇️
+    "NomeDelBenchmark": _nuovo,
+}
 ```
 
-Lo script salterà in automatico i documenti già caricati grazie alla cache locale (`.dave_docs_cache.json`).
+- La funzione restituisce coppie **(id, testo)**: un documento per coppia, con id univoci e stabili.
+- I duplicati e i documenti vuoti vengono scartati automaticamente; i documenti oltre i 500.000 caratteri vengono divisi in parti (`<id>_part2`, `<id>_part3`, …), lo stesso limite usato per DAVE.
+- Se i file del corpus non esistono, la valutazione si ferma con un messaggio che indica il percorso mancante; se il benchmark non è registrato in `_CORPORA`, si ferma con un messaggio che rimanda a questo Step.
+- Per il **RAG locale** non serve altro: all'avvio della valutazione SuperBenchmark chiede a `POST /ingest` quali documenti mancano e carica solo quelli (vedi *Collegare il proprio RAG* nel README).
+
+> Se il benchmark non ha un corpus separato ma fornisce i documenti per ogni domanda (come CRAG con le sue pagine web), usa `_per_question("NomeDelBenchmark")` e aggiungi il file JSONL in `BENCHMARK_FILES`: il corpus viene preso dal campo `context`.
 
 ---
 
-## Step 3: Integrazione nella Dashboard (`app.py`) e nella CLI (`cli.py`)
+## Step 3: Ingestione Documenti su DAVE (`ingest_dave.py`)
+
+Solo se utilizzi **DAVE**: i documenti del corpus devono essere caricati e indicizzati sul server.
+
+1. In `corpus_sources.py` aggiungi la collection nel dizionario `DAVE_COLLECTIONS` (nome della collection su DAVE -> nome del benchmark). È l'unico punto da modificare: lo usano sia `ingest_dave.py` per il caricamento sia l'evaluator per sapere in quale collection cercare.
+   ```python
+   DAVE_COLLECTIONS = {
+       ...
+       "Nuovo": "NomeDelBenchmark",
+   }
+   ```
+2. Carica il corpus:
+   ```bash
+   python ingest_dave.py Nuovo --wait
+   ```
+   Lo script crea la collection (se non esiste) e invia i documenti a lotti, saltando quelli già caricati grazie alla cache locale (`.dave_docs_cache.json`). Con `--wait` attende che DAVE li abbia indicizzati e ricarica quelli falliti.
+
+---
+
+## Step 4: Integrazione nella Dashboard (`app.py`) e nella CLI (`cli.py`)
 
 Ora che i dati sono pronti, occorre registrare il nuovo benchmark nell'applicazione:
 
@@ -63,11 +97,12 @@ Ora che i dati sono pronti, occorre registrare il nuovo benchmark nell'applicazi
        "MTRAG (Multi-Turn Conversations)": "Tutto_MTRAG_DAVE.jsonl",
        "OHRBench (OCR Noise / Scans)": "Tutto_OHRBench_DAVE.jsonl",
        "SQuAD-it (Italian Q&A on Wikipedia)": "Tutto_SQUAD.jsonl",
-     
+
        # ⬇️ AGGIUNGI IL TUO BENCHMARK QUI ⬇️
        "Il Mio Nuovo Dataset (Test X)": "Tutto_NUOVO.jsonl"
    }
    ```
+   Facoltativo: aggiungi un nome breve in `BENCHMARK_SHORT` (es. `"NomeDelBenchmark": "Nuovo"`), usato nei grafici.
 
 2. **Interfaccia CLI (`webpage/cli.py`):**
    Aggiungi il riferimento nel dizionario `BENCHMARK_MAP`:
@@ -77,7 +112,13 @@ Ora che i dati sono pronti, occorre registrare il nuovo benchmark nell'applicazi
 
 ---
 
+### Facoltativo: Download Automatico (`webpage/benchmark_download.py`)
+
+Se vuoi che il pulsante **Download Benchmark** scarichi anche il tuo dataset, aggiungi le sue fonti alla lista `SOURCES` (domande e corpus), con la destinazione in `Benchmarks/` attesa dagli Step 1 e 2.
+
+---
+
 ### Conclusione
 
 Esegui `streamlit run webpage/app.py` o lancia la CLI con `python webpage/cli.py`.
-Il nuovo benchmark apparirà immediatamente tra le opzioni disponibili. La suite eseguirà automaticamente il retrieval, il filtro semantico, la valutazione RAGAS con l'LLM Judge e la diagnosi automatica degli errori.
+Il nuovo benchmark apparirà immediatamente tra le opzioni disponibili. La suite caricherà il corpus nel RAG, eseguirà il retrieval, il filtro semantico, la valutazione RAGAS con l'LLM Judge e la diagnosi automatica degli errori.
