@@ -19,7 +19,7 @@ AGGREGATE_KEYS = {
 }
 
 
-def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: float,
+def save_evaluation(results: list[dict], model: str, endpoint: str,
                     sample_size: int, benchmarks_used: list[str], rag_engine: str = "Unknown",
                     name: str = "", config: dict | None = None) -> dict:
     """Saves the evaluation results to a JSON file.
@@ -68,7 +68,6 @@ def save_evaluation(results: list[dict], model: str, endpoint: str, threshold: f
         "timestamp": timestamp.isoformat(),
         "model": model,
         "endpoint": endpoint,
-        "threshold": threshold,
         "sample_size": sample_size,
         "benchmarks_used": benchmarks_used,
         "rag_engine": rag_engine,
@@ -98,7 +97,6 @@ def list_evaluations() -> list[dict]:
                 "timestamp": data.get("timestamp", ""),
                 "model": data.get("model", "Unknown"),
                 "endpoint": data.get("endpoint", ""),
-                "threshold": data.get("threshold", 0.0),
                 "sample_size": data.get("sample_size", 0),
                 "benchmarks_used": data.get("benchmarks_used", []),
                 "rag_engine": data.get("rag_engine", "Unknown"),
@@ -119,6 +117,16 @@ def list_evaluations() -> list[dict]:
 def load_evaluation(filepath: str) -> dict:
     # loads a complete evaluation from JSON
     return json.loads(Path(filepath).read_text(encoding='utf-8'))
+
+
+def set_expert_report(filepath: str, report: str) -> None:
+    """Stores the LLM expert report in the saved evaluation, so it is not generated again."""
+    path = Path(filepath)
+    data = json.loads(path.read_text(encoding='utf-8'))
+    data["expert_report"] = report
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+    tmp.replace(path)
 
 
 def delete_evaluation(filepath: str) -> bool:

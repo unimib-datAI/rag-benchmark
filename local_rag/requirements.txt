@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+bm25s
+PyStemmer
+tqdm
+openai
+python-dotenv
+beautifulsoup4
+numpy

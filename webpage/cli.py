@@ -1,3 +1,4 @@
+import os
 import sys
 import json
 import random
@@ -25,7 +26,7 @@ except ImportError as e:
 
 # paths and config
 RUN_DIR = Path(__file__).resolve().parents[1] / "Run"
-CONFIG_FILE = Path(__file__).resolve().parents[1] / "config.json"
+CONFIG_FILE = Path(os.environ.get("STATE_DIR") or Path(__file__).resolve().parents[1]) / "config.json"
 
 # map benchmark -> corresponding jsonl file (aligned with app.py BENCHMARK_MAPPING)
 BENCHMARK_MAP = {
@@ -133,7 +134,6 @@ def interactive_menu():
     config = load_config()
 
     def_endpoint    = config.get("endpoint", "http://127.0.0.1:8000")
-    def_threshold   = config.get("threshold", "0.3")
     def_rag_engine  = config.get("motore_rag", "Local RAG (BM25)")
     def_ollama_url  = config.get("ollama_url", "http://localhost:11434")
     def_model       = config.get("model", "gemma4:31b-cloud")
@@ -154,16 +154,6 @@ def interactive_menu():
         endpoint   = prompt_input("RAG Base URL", def_endpoint)
         engine_str = prompt_input("Motore RAG [Local / DAVE]", def_rag_engine)
         rag_engine = normalize_rag_engine(engine_str)
-
-        while True:
-            thresh_str = prompt_input("Soglia di Similarità Semantica (0.0 - 1.0)", def_threshold)
-            try:
-                threshold = float(thresh_str)
-                if 0.0 <= threshold <= 1.0:
-                    break
-                print("La soglia deve essere compresa tra 0.0 e 1.0.")
-            except ValueError:
-                print("Inserisci un numero decimale valido.")
 
         ollama_url = prompt_input("URL LLM Judge (es. http://localhost:11434)", def_ollama_url)
         import getpass
@@ -222,7 +212,6 @@ def interactive_menu():
         print(f"  Nome Valutazione: {eval_name}")
         print(f"  RAG Base URL:     {endpoint}")
         print(f"  Motore RAG:       {rag_engine}")
-        print(f"  Soglia Similarità:{threshold}")
         print(f"  LLM Judge URL:    {ollama_url}")
         print(f"  API Key:          {'***IMPOSTATA***' if llm_api_key else 'Nessuna'}")
         print(f"  Modello LLM:      {model}")
@@ -237,7 +226,6 @@ def interactive_menu():
         if choice in ["A", "S", ""]:
             config["endpoint"]       = endpoint
             config["motore_rag"]     = rag_engine
-            config["threshold"]      = str(threshold)
             config["ollama_url"]     = ollama_url
             config["model"]          = model
             config["benchmarks"]     = benchmarks_str
@@ -247,7 +235,7 @@ def interactive_menu():
             config["ingest_corpus"]   = "N" if skip_ingest else "Y"
             save_config(config)
 
-            return (eval_name, endpoint, threshold, rag_engine, ollama_url, model,
+            return (eval_name, endpoint, rag_engine, ollama_url, model,
                     benchmarks, sample_size, selection_mode, llm_api_key, max_workers, skip_ingest)
 
 
@@ -475,7 +463,6 @@ def build_parser():
     parser.add_argument("--name", type=str, default="", help="Nome identificativo della valutazione")
     parser.add_argument("--engine", type=str, default=None, help="Motore RAG target ('Local' o 'DAVE')")
     parser.add_argument("--endpoint", type=str, default=None, help="URL base del motore RAG (es. http://127.0.0.1:8000)")
-    parser.add_argument("--threshold", type=float, default=None, help="Soglia di similarità semantica (0.0 - 1.0, default: 0.3)")
     parser.add_argument("--judge-url", type=str, default=None, help="Endpoint dell'LLM Judge (es. http://localhost:11434)")
     parser.add_argument("--model", type=str, default=None, help="Nome modello LLM Judge (es. gemma4:31b-cloud)")
     parser.add_argument("--api-key", type=str, default="", help="API Key per modelli cloud / OpenAI")
@@ -510,7 +497,7 @@ def main():
     if is_interactive:
         print(HEADER)
         try:
-            (eval_name, endpoint, threshold, rag_engine, ollama_url, model,
+            (eval_name, endpoint, rag_engine, ollama_url, model,
              benchmarks, sample_size, selection_mode, llm_api_key, max_workers, skip_ingest) = interactive_menu()
         except KeyboardInterrupt:
             print("\n\nOperazione annullata dall'utente.")
@@ -525,7 +512,6 @@ def main():
 
         endpoint       = args.endpoint or config.get("endpoint", "http://127.0.0.1:8000")
         rag_engine     = normalize_rag_engine(args.engine or config.get("motore_rag", "Local RAG (BM25)"))
-        threshold      = args.threshold if args.threshold is not None else float(config.get("threshold", "0.3"))
         ollama_url     = args.judge_url or config.get("ollama_url", "http://localhost:11434")
         model          = args.model or config.get("model", "gemma4:31b-cloud")
         llm_api_key    = args.api_key
@@ -544,7 +530,7 @@ def main():
 
         print(HEADER)
         print(f"🚀 Avvio valutazione automatizzata: {eval_name}")
-        print(f"  Motore: {rag_engine} ({endpoint}) | Soglia: {threshold} | Judge: {model} ({ollama_url})")
+        print(f"  Motore: {rag_engine} ({endpoint}) | Judge: {model} ({ollama_url})")
         print(f"  Benchmark: {', '.join(benchmarks)} | Campioni/Bench: {sample_size} | Mode: {selection_mode} | Workers: {max_workers}\n")
 
     # Caricamento del dataset (seed salvato nella valutazione per poter ripetere il campionamento)
@@ -564,7 +550,6 @@ def main():
         results = run_evaluation(
             dataset=dataset,
             rag_base_url=endpoint,
-            threshold=threshold,
             ollama_url=ollama_url,
             ollama_model=model,
             llm_api_key=llm_api_key,
@@ -604,7 +589,6 @@ def main():
             results=results,
             model=model,
             endpoint=endpoint,
-            threshold=threshold,
             sample_size=sample_size,
             benchmarks_used=benchmarks,
             rag_engine=rag_engine,

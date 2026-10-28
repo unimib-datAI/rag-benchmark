@@ -1,3 +1,4 @@
+import os
 import json
 import math
 import re
@@ -102,7 +103,6 @@ from ragas.metrics import (
 from langchain_ollama import ChatOllama
 from langchain_huggingface import HuggingFaceEmbeddings
 from datasets import Dataset
-from sentence_transformers import SentenceTransformer, util as st_util
 
 logger = logging.getLogger("evaluator")
 
@@ -114,17 +114,10 @@ class RagError(RuntimeError):
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
 MAX_CONTEXT_CHARS = 180_000
-FETCH_K = 10  # documents requested from the RAG for each query, before the semantic filter
-_embedding_model = None
+FETCH_K = 10  # documents requested from the RAG for each query
 sys.path.append(str(ROOT_DIR))
 # benchmark corpora shared with ingest_dave.py, so both RAG engines index the same documents
 from corpus_sources import Corpus, benchmark_source, DAVE_COLLECTIONS
-
-def _get_embedding_model():
-    global _embedding_model
-    if _embedding_model is None:
-        _embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-    return _embedding_model
 
 # Ollama native API paths: stripped from the judge URL, ChatOllama wants the bare host
 _OLLAMA_API_PATH = re.compile(r"/api(/(chat|generate|tags|embed|embeddings))?/?$")
@@ -157,7 +150,7 @@ def parse_llm_endpoint_or_key(endpoint_or_key: str, default_base_url: str = "htt
     auth_header = val if val.lower().startswith("bearer ") else f"Bearer {val}"
     return default_base_url, {"headers": {"Authorization": auth_header}}
 
-def build_judge_llm(endpoint: str, model: str, api_key: str = "", callbacks=None):
+def build_judge_llm(endpoint: str, model: str, api_key: str = "", callbacks=None, timeout=None):
     """LangChain chat model for the judge, shared by RAGAS and the dashboard's expert report.
     OpenAI-compatible (ChatOpenAI) with an API key or a /v1, openai or azure URL,
     otherwise Ollama. Returns (llm, is_openai)."""
@@ -172,7 +165,10 @@ def build_judge_llm(endpoint: str, model: str, api_key: str = "", callbacks=None
             api_key=api_key or "sk-no-key",
             temperature=0,
             callbacks=callbacks,
+            **({"timeout": timeout} if timeout else {}),
         ), True
+    if timeout:
+        client_kwargs = {**client_kwargs, "timeout": timeout}
     return ChatOllama(
         model=model,
         base_url=base_url,
@@ -237,29 +233,6 @@ def _extract_doc_text(d):
         if 'chunks' in d: return " ".join(c.get('text', '') for c in d['chunks'])
         return str(d)
     return str(d)
-
-def filter_docs_by_threshold(docs, query, threshold, model):
-    """Filter retrieved documents by semantic similarity threshold using batch encoding."""
-    if not docs:
-        return docs
-
-    doc_texts = []
-    valid_docs = []
-    for d in docs:
-        doc_text = _extract_doc_text(d)
-        if doc_text.strip():
-            doc_texts.append(doc_text.strip())
-            valid_docs.append(d)
-
-    if not doc_texts:
-        return docs[:1]
-
-    # Single batch encode: query + all docs at once
-    all_embeddings = model.encode([query] + doc_texts)
-    scores = st_util.cos_sim(all_embeddings[0], all_embeddings[1:])[0]
-
-    filtered = [d for d, score in zip(valid_docs, scores) if float(score) >= threshold]
-    return filtered if filtered else [docs[0]]
 
 def format_retrieved(docs):
     if not docs: return "No documents retrieved."
@@ -370,11 +343,12 @@ def ingest_corpus_to_rag(benchmark_files, run_dir, rag_base_url, progress_callba
 def get_dave_client_and_collections():
     from dave_client import DaveClient
     collections = {}
-    col_path = ROOT_DIR / ".dave_collections.json"
+    col_path = Path(os.environ.get("STATE_DIR") or ROOT_DIR) / ".dave_collections.json"
     if col_path.exists():
         with open(col_path, "r") as f:
             collections = json.load(f)
-    return DaveClient(), collections
+    from settings import dave_settings
+    return DaveClient(**dave_settings()), collections
 
 # benchmark -> DAVE collection name, from the single mapping used by ingest_dave.py
 DAVE_COLLECTION_NAMES = {source: name for name, source in DAVE_COLLECTIONS.items()}
@@ -393,16 +367,14 @@ def query_dave(client, collections, source, actual_top_k, search_query):
     return client.retrieve_chunks(search_query, col_id, top_k=actual_top_k)
 
 def generate_dave(client, collections, source, question, docs):
-    """One DAVE generation on exactly `docs` (the filtered documents RAGAS will judge)."""
+    """One DAVE generation on exactly `docs` (the retrieved documents RAGAS will judge)."""
     formatted = [{"chunks": [{"text": d}]} if isinstance(d, str) else d for d in docs]
     sys_prompt = client.build_system_prompt(formatted, question)
     return client.generate_answer(sys_prompt, question, collection_id=_dave_collection_id(collections, source))
 
-def query_local_rag(endpoint, question, actual_top_k, source, context_docs, search_query, inline=None):
-    """Ask the local RAG; with inline=True it answers only on context_docs (texts) instead of its index."""
+def query_local_rag(endpoint, question, actual_top_k, source, search_query):
+    """Ask the local RAG, which retrieves from its own index and answers."""
     payload = {"question": question, "top_k": actual_top_k, "benchmark_name": source, "search_query": search_query}
-    if inline:
-        payload["documents"] = context_docs
 
     # an HTTP error, an exception or a missing answer is a failure of the RAG, never an
     # answer to evaluate: raise RagError and let run_evaluation mark the query as RAG_ERROR
@@ -426,7 +398,7 @@ def query_local_rag(endpoint, question, actual_top_k, source, context_docs, sear
 
 # EVALUATION PIPELINE
 
-def process_single_query(item, motore_rag, dave_client, dave_collections, ask_endpoint, threshold, conversation_memory):
+def process_single_query(item, motore_rag, dave_client, dave_collections, ask_endpoint, conversation_memory):
     query_id, source, gold, raw_question = item['id'], item['source'], item['gold_answer'], item["question"]
     conv_id = query_id.split("_t")[0] if source == "MTRAG" else None
     
@@ -438,40 +410,22 @@ def process_single_query(item, motore_rag, dave_client, dave_collections, ask_en
     else:
         sent_question = raw_question
 
-    # Same top_k for both engines: fixed and high (e.g. 10)
-    fetch_k = FETCH_K
-
-    # Rule shared by both engines: retrieve -> threshold filter -> the answer is generated on
-    # exactly the filtered documents, which are the retrieved_contexts given to RAGAS
+    # Same top_k for both engines. The answer is judged exactly as returned, together with
+    # the documents retrieved for it (the retrieved_contexts given to RAGAS)
     if "DAVE" in motore_rag:
-        # DAVE: retrieval only here, the single generation happens after the filter
-        rag_answer_temp, retrieved_docs = None, query_dave(dave_client, dave_collections, source, fetch_k, search_query)
+        retrieved_docs = query_dave(dave_client, dave_collections, source, FETCH_K, search_query)
+        rag_answer = generate_dave(dave_client, dave_collections, source, sent_question, retrieved_docs)
     else:
-        rag_answer_temp, retrieved_docs = query_local_rag(ask_endpoint, sent_question, fetch_k, source, [], search_query)
-
-    # THRESHOLD — batch-encoded semantic filtering
-    model = _get_embedding_model()
-    filtered_docs = filter_docs_by_threshold(retrieved_docs, search_query, threshold, model)
-
-    if "DAVE" in motore_rag:
-        # one generation per query, on all and only the filtered documents
-        rag_answer = generate_dave(dave_client, dave_collections, source, sent_question, filtered_docs)
-    elif len(filtered_docs) < len(retrieved_docs):
-        # RAGAS judges only the filtered documents: the answer must be generated on the
-        # same ones, otherwise facts from discarded documents look like hallucinations
-        filtered_texts = [_extract_doc_text(d) for d in filtered_docs]
-        rag_answer = query_local_rag(ask_endpoint, sent_question, fetch_k, source, filtered_texts, search_query, inline=True)[0]
-    else:
-        rag_answer = rag_answer_temp
+        rag_answer, retrieved_docs = query_local_rag(ask_endpoint, sent_question, FETCH_K, source, search_query)
 
     if source == "MTRAG":
         conversation_memory[conv_id] = conversation_memory.get(conv_id, "") + f"User: {raw_question}\nAssistant: {rag_answer}\n"
 
-    doc_strings = [_extract_doc_text(d) for d in filtered_docs] or ["No relevant document found above the threshold."]
+    doc_strings = [_extract_doc_text(d) for d in retrieved_docs] or ["No document retrieved."]
     
     return {
         "query_id": query_id, "source": source, "domanda": sent_question, "risposta_rag": rag_answer, "gold": gold,
-        "docs": format_retrieved(filtered_docs)
+        "docs": format_retrieved(retrieved_docs)
     }, {
         "user_input": sent_question, "response": rag_answer, "retrieved_contexts": doc_strings, "reference": gold
     }
@@ -492,7 +446,7 @@ def _rag_error_report(item, err):
     rep.update(classify_query_verdict(rep))
     return rep
 
-def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, llm_api_key="", progress_callback=None, tps_callback=None, motore_rag="Local RAG (BM25)", benchmark_files=None, selected_metrics=None, max_workers=1):
+def run_evaluation(dataset, rag_base_url, ollama_url, ollama_model, llm_api_key="", progress_callback=None, tps_callback=None, motore_rag="Local RAG (BM25)", benchmark_files=None, selected_metrics=None, max_workers=1):
     run_start = time.perf_counter()
     # --- Automatic ingestion: send the corpus to the RAG under test ---
     ingest_times = {}
@@ -513,7 +467,7 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, l
     for idx, item in enumerate(dataset):
         query_start = time.perf_counter()
         try:
-            ui_rep, ragas_samp = process_single_query(item, motore_rag, dave_client, dave_collections, ask_endpoint, threshold, conversation_memory)
+            ui_rep, ragas_samp = process_single_query(item, motore_rag, dave_client, dave_collections, ask_endpoint, conversation_memory)
         except Exception as e:
             # infrastructure failure (HTTP error, empty answer, DAVE/tRPC error...): the query
             # is recorded as RAG_ERROR, kept out of RAGAS and of the averages, and the run goes on
@@ -554,7 +508,7 @@ def run_evaluation(dataset, rag_base_url, threshold, ollama_url, ollama_model, l
     if progress_callback: progress_callback("ragas", 0, 1, "Computing RAGAS metrics...")
 
     callbacks = [TPSCallbackHandler(tps_callback)] if tps_callback else []
-    ragas_llm, is_openai = build_judge_llm(ollama_url, ollama_model, llm_api_key, callbacks)
+    ragas_llm, is_openai = build_judge_llm(ollama_url, ollama_model, llm_api_key, callbacks=callbacks)
 
     ragas_embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
 

@@ -1,6 +1,11 @@
 import json
+import os
 import random
 from html import escape
+import re
+import sys
+import time
+import requests
 import pandas as pd
 import streamlit as st
 
@@ -11,8 +16,13 @@ from pathlib import Path
 
 from evaluator import run_evaluation, build_judge_llm, classify_query_verdict, FETCH_K
 from taxonomy import metric_mean, metric_value, needs_reclassification
-from persistence import save_evaluation, list_evaluations, load_evaluation, delete_evaluation
-from benchmark_download import build_benchmarks_zip
+from persistence import save_evaluation, list_evaluations, load_evaluation, delete_evaluation, set_expert_report
+import api_guide
+import answerable
+import ingest_http
+from benchmark_download import build_benchmarks_zip, extract_benchmarks_zip
+import jobs
+from settings import load_config, save_config, dave_settings, DAVE_RETRIEVAL_METHODS
 
 import dashboard as dash
 from dashboard import get_pattern_legend_html
@@ -42,6 +52,16 @@ BENCHMARK_MAPPING = {
     "MTRAG (Multi-Turn Conversations)": "Tutto_MTRAG_DAVE.jsonl",
     "OHRBench (OCR Noise / Scans)": "Tutto_OHRBench_DAVE.jsonl",
     "SQuAD-it (Italian Q&A on Wikipedia)": "Tutto_SQUAD.jsonl"
+}
+
+# benchmark file -> Run/ script that builds it
+EXTRACT_SCRIPTS = {
+    "Tutto_LEGALBENCH.jsonl": "extract_legalbenchmark.py",
+    "Tutto_MULTIHOP.jsonl": "extract_multihop.py",
+    "Tutto_CRAG_DAVE.jsonl": "extract_crag.py",
+    "Tutto_MTRAG_DAVE.jsonl": "extract_mtrag.py",
+    "Tutto_OHRBench_DAVE.jsonl": "extract_ohrbench.py",
+    "Tutto_SQUAD.jsonl": "extract_squad.py",
 }
 
 BENCHMARK_SHORT = {
@@ -98,6 +118,77 @@ def _short_source(source: str) -> str:
             return short
     return source
 
+# --- settings helpers -------------------------------------------------------
+
+if "cfg" not in st.session_state:
+    st.session_state.cfg = load_config()
+
+
+def _init(key, value):
+    """Seed st.session_state once (widget state is dropped when a widget is hidden)."""
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+def _persist(values: dict):
+    """Write the changed keys to config.json right away."""
+    cfg = st.session_state.cfg
+    changed = {k: v for k, v in values.items() if cfg.get(k) != v}
+    if changed:
+        cfg.update(changed)
+        save_config(cfg)
+
+
+def _sync_rag_url(widget_key):
+    st.session_state.rag_url = st.session_state[widget_key]
+
+
+def _clamp(value, lo, hi, default):
+    try:
+        return min(max(type(default)(value), lo), hi)
+    except (TypeError, ValueError):
+        return default
+
+
+def _open_evaluation(full_eval: dict):
+    """Make a saved evaluation the current one, with the expert report stored in it (if any)."""
+    results = full_eval.get("results", [])
+    # retroactive classification for old evaluations (missing verdict or older taxonomy)
+    for rep in results:
+        if needs_reclassification(rep):
+            rep.update(classify_query_verdict(rep))
+    st.session_state.results = results
+    st.session_state.current_eval_name = full_eval.get("name", "")
+    st.session_state.current_eval_filepath = full_eval.get("filepath")
+    st.session_state.pop("llm_advice", None)
+    if full_eval.get("expert_report"):
+        st.session_state.llm_advice = full_eval["expert_report"]
+
+
+_EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D]+")
+
+
+def _style_report(text: str) -> str:
+    """Report of the LLM expert: no emojis, section titles in colour."""
+    text = _EMOJI_RE.sub("", text)
+    text = re.sub(r"^(#{1,4})[ \t]+(.+?)[ \t]*$", r"\1 :violet[\2]", text, flags=re.MULTILINE)
+    return text
+
+
+def _indexed_benchmarks():
+    """Benchmarks ready to evaluate with DAVE: collection created and documents uploaded.
+
+    OHRBench has no collection by design (its documents travel with each question)."""
+    import ingest_dave
+    collections, cache = ingest_dave.load_collections(), ingest_dave.load_doc_cache()
+    ready = []
+    for name in BENCHMARK_MAPPING:
+        short = next((v for k, v in BENCHMARK_SHORT.items() if name.startswith(k)), name)
+        if short == "OHRBench" or (short in collections and cache.get(short)):
+            ready.append(name)
+    return ready
+
+
 # page banner
 st.markdown(dash.get_header_html(), unsafe_allow_html=True)
 
@@ -111,100 +202,151 @@ if "current_eval_name" not in st.session_state:
 # sidebar
 with st.sidebar:
     st.header("⚙️ RAG Engine Settings")
-    motore_rag = st.radio("Select Search Engine & LLM", ["Local RAG (BM25)", "DAVE (Elasticsearch)"])
+    # sidebar settings are kept in config.json ("ui") so a page reload does not lose them
+    ui_saved = st.session_state.cfg.get("ui", {})
+    ENGINES = ["DAVE (Elasticsearch)", "Custom RAG (HTTP)"]
+    _init("engine_select", ui_saved.get("engine") if ui_saved.get("engine") in ENGINES else ENGINES[0])
+    motore_rag = st.radio(
+        "RAG Engine", ENGINES, key="engine_select",
+        help="DAVE: the DAVE server configured in the Setup tab. Custom RAG: your own RAG, reached over HTTP "
+             "with the POST /ask and /ingest routes described in the API Guide tab.")
 
-    st.markdown('<p class="sidebar-label">Base URL RAG</p>', unsafe_allow_html=True)
-    rag_base_url = st.text_input("rag_base_url", "http://127.0.0.1:8000", label_visibility="collapsed")
+    if "DAVE" in motore_rag:
+        _init("w_dave_retrieval_method", dave_settings(st.session_state.cfg)["retrieval_method"])
+        if st.session_state.w_dave_retrieval_method not in DAVE_RETRIEVAL_METHODS:
+            st.session_state.w_dave_retrieval_method = "full"
+        dave_retrieval = st.radio(
+            "DAVE Retrieval Type", list(DAVE_RETRIEVAL_METHODS), format_func=DAVE_RETRIEVAL_METHODS.get,
+            key="w_dave_retrieval_method",
+            help="How DAVE finds the chunks. Hybrid: vector search + full-text search (and entities) merged with "
+                 "Reciprocal Rank Fusion. Dense: vector (embedding) search only. "
+                 "Sparse: keyword full-text search only. Used by evaluations and by the retrieval test.")
+        # saved right away: the evaluation below reads it from config.json
+        _persist({"dave": {**dave_settings(st.session_state.cfg), "retrieval_method": dave_retrieval}})
 
-    st.markdown('<p class="sidebar-label">Similarity Threshold</p>', unsafe_allow_html=True)
-    threshold = st.slider("threshold", min_value=0.0, max_value=1.0, value=0.3, step=0.05, label_visibility="collapsed")
+    # one value for the custom RAG address, edited here and in Setup > Generic RAG (HTTP)
+    _init("rag_url", ui_saved.get("rag_base_url", "http://127.0.0.1:8000"))
+    if "DAVE" not in motore_rag:
+        st.session_state.rag_url_sidebar = st.session_state.rag_url
+        st.text_input(
+            "Base URL RAG", key="rag_url_sidebar", on_change=_sync_rag_url, args=("rag_url_sidebar",),
+            help="Address of your RAG: the tool calls <Base URL>/ask and <Base URL>/ingest. "
+                 "From the Docker container, a RAG running on the host is http://host.docker.internal:PORT, not localhost.")
+        st.caption("Upload the benchmark corpus to your RAG in Setup > Generic RAG (HTTP).")
+        if st.button("Test RAG endpoint", width='stretch', key="test_rag_endpoint",
+                     help="Sends one sample question to <Base URL>/ask and checks the reply."):
+            with st.spinner("Waiting for your RAG..."):
+                checks = api_guide.check_endpoint(st.session_state.rag_url, "SQuAD-it")
+            for level, message in checks:
+                {"ok": st.success, "info": st.info, "warning": st.warning, "error": st.error}[level](message[:300])
+    rag_base_url = st.session_state.rag_url
 
     st.markdown('<hr class="sidebar-divider">', unsafe_allow_html=True)
 
-    st.markdown("### LLM Judge")
-    st.markdown('<p class="sidebar-label">Indirizzo LLM (Endpoint URL)</p>', unsafe_allow_html=True)
+    st.markdown("### LLM Judge", help="The judge LLM scores the answers with RAGAS metrics and classifies errors.")
+    # judge settings are kept in config.json (same keys as the CLI) so a page reload does not lose them
+    _init("ollama_url", st.session_state.cfg.get("ollama_url", "http://localhost:11434"))
+    _init("llm_api_key", st.session_state.cfg.get("llm_api_key", ""))
+    _init("model_select", st.session_state.cfg.get("model", "gemma4:31b-cloud"))
+
     ollama_url = st.text_input(
-        "ollama_url",
-        "http://localhost:11434",
-        placeholder="es. http://localhost:11434 o URL dell'università",
-        label_visibility="collapsed",
-    )
+        "LLM Address (Endpoint URL)", key="ollama_url",
+        placeholder="e.g. http://localhost:11434 or the university URL",
+        help="Ollama or OpenAI-compatible server hosting the judge model.")
 
-    st.markdown('<p class="sidebar-label">API Key (Opzionale)</p>', unsafe_allow_html=True)
     llm_api_key = st.text_input(
-        "llm_api_key",
-        "",
-        placeholder="es. sk-12345...",
-        type="password",
-        label_visibility="collapsed",
-    )
+        "API Key (Optional)", key="llm_api_key", placeholder="e.g. sk-12345...", type="password",
+        help="Only needed for cloud/university endpoints that require authentication.")
 
-    st.markdown('<p class="sidebar-label">Model</p>', unsafe_allow_html=True)
-    # Permette all'utente di inserire un modello personalizzato
-    ollama_model = st.text_input("model_select", value="gemma4:31b-cloud", placeholder="es. gemma4:31b-cloud o il modello dell'università", label_visibility="collapsed")
+    # lets the user enter a custom model
+    ollama_model = st.text_input(
+        "Model", key="model_select",
+        placeholder="e.g. gemma4:31b-cloud or the university model",
+        help="Name of the judge model, as known by the endpoint.")
+    _persist({"ollama_url": ollama_url.strip(), "model": ollama_model.strip(), "llm_api_key": llm_api_key})
+
+    if st.button("Test judge", width='stretch', key="test_judge",
+                 help="Sends a one-word prompt to the judge with the endpoint, key and model above."):
+        started = time.time()
+        try:
+            with st.spinner("Contacting the judge..."):
+                llm, _ = build_judge_llm(ollama_url, ollama_model, llm_api_key, timeout=30)
+                reply = str(llm.invoke("Reply with the single word: OK").content).strip()
+            st.success(f"✅ Judge reachable ({time.time() - started:.1f}s). Reply: {reply[:80] or '(empty)'}")
+        except Exception as e:
+            st.error(f"❌ Judge not reachable: {str(e)[:400]}")
 
     st.markdown('<hr class="sidebar-divider">', unsafe_allow_html=True)
 
-    st.markdown("### Benchmark")
+    st.markdown("### Benchmark", help="Which benchmark query sets to evaluate.")
+    # DAVE: only the benchmarks already indexed; custom RAG: all (the corpus is uploaded to /ingest)
+    default_benchmarks = _indexed_benchmarks() if "DAVE" in motore_rag else list(BENCHMARK_MAPPING)
+    _init("bench_select", default_benchmarks if ui_saved.get("benchmarks") is None else ui_saved["benchmarks"])
+    if st.session_state.get("engine_prev", motore_rag) != motore_rag:
+        st.session_state.bench_select = default_benchmarks   # switching engine resets the selection
+    st.session_state.engine_prev = motore_rag
+    st.session_state.bench_select = [n for n in st.session_state.bench_select if n in BENCHMARK_MAPPING]
     selected_names = st.multiselect(
-        "bench_select",
+        "Benchmarks",
         options=list(BENCHMARK_MAPPING.keys()),
-        default=list(BENCHMARK_MAPPING.keys()),
+        key="bench_select",
         label_visibility="collapsed",
+        help="Which benchmark query sets to evaluate. With DAVE the default is the ones already indexed "
+             "(plus OHRBench, whose documents travel with each question); with a custom RAG, all of them.",
     )
 
     selected_files = [BENCHMARK_MAPPING[name] for name in selected_names]
     st.caption(f"{len(selected_names)} of {len(BENCHMARK_MAPPING)} selected")
 
-    # the raw benchmarks are not in the repository: download them from the official sources
-    if st.button("Download Benchmark", width='stretch', disabled=st.session_state.running,
-                 help="Downloads the raw files of the 6 benchmarks (~1 GB) into a .zip in the project folder"):
-        # clicking Cancel makes Streamlit interrupt this run at the next progress update;
-        # build_benchmarks_zip then removes the partial zip and the temporary files
-        cancel_slot = st.empty()
-        cancel_slot.button("Cancel Download", width='stretch',
-                           on_click=lambda: st.session_state.update(download_cancelled=True))
-        bar = st.progress(0.0, text="Starting download...")
+    _init("sample_size_widget", _clamp(ui_saved.get("sample_size"), 1, 10**6, 3))
+    sample_size_param = st.number_input(
+        "Queries per Benchmark", min_value=1, step=1, key="sample_size_widget",
+        help="How many queries to evaluate for each selected benchmark.")
 
-        def _show_progress(step, n_steps, label, done, total):
-            fraction = (step + (done / total if total else 0)) / n_steps
-            size = f"{done / 2**20:.0f}/{total / 2**20:.0f} MB" if total else f"{done / 2**20:.0f} MB"
-            bar.progress(min(fraction, 1.0), text=f"[{step + 1}/{n_steps}] {label}: {size}")
-
-        try:
-            zip_path = build_benchmarks_zip(progress=_show_progress)
-            cancel_slot.empty()
-            bar.empty()
-            st.success(f"Saved `{zip_path}`. Extract it in the project folder, then run the `Run/extract_*.py` scripts.")
-        except Exception as e:
-            cancel_slot.empty()
-            bar.empty()
-            st.error(f"Benchmark download failed: {e}")
-    elif st.session_state.pop("download_cancelled", False):
-        st.info("Download cancelled.")
-
-    st.markdown('<p class="sidebar-label" style="margin-top: 1rem;">Queries per Benchmark</p>', unsafe_allow_html=True)
-    sample_size_param = st.number_input("sample_size_param", min_value=1, value=3, step=1, label_visibility="collapsed")
-
-    st.markdown('<p class="sidebar-label" style="margin-top: 1rem;">Metriche RAGAS da Calcolare</p>', unsafe_allow_html=True)
     all_metrics = ["faithfulness", "answer_relevancy", "context_precision", "answer_correctness", "context_recall"]
-    selected_metrics = st.multiselect("metrics_select", options=all_metrics, default=all_metrics, label_visibility="collapsed")
-    
-    st.markdown('<p class="sidebar-label" style="margin-top: 1rem;">Richieste in Parallelo (Velocità)</p>', unsafe_allow_html=True)
-    max_workers_param = st.slider("max_workers_param", min_value=1, max_value=10, value=2, step=1, label_visibility="collapsed")
+    metric_help = {
+        "faithfulness": "Is the answer grounded in the retrieved context?",
+        "answer_relevancy": "Does the answer address the question?",
+        "context_precision": "Are the retrieved docs relevant (ranked first)?",
+        "answer_correctness": "Does the answer match the gold answer?",
+        "context_recall": "Does the retrieved context cover the gold answer?",
+    }
+    st.markdown("RAGAS Metrics to Compute", help="Fewer metrics = faster and cheaper evaluation.")
+    saved_metrics = ui_saved.get("metrics", all_metrics)
+    for m in all_metrics:
+        _init(f"metric_{m}", m in saved_metrics)
+    selected_metrics = [m for m in all_metrics if st.checkbox(m, key=f"metric_{m}", help=metric_help[m])]
 
-    st.markdown('<p class="sidebar-label" style="margin-top: 1rem;">Selection Mode</p>', unsafe_allow_html=True)
-    query_selection_mode = st.radio("query_selection_mode", options=["Random", "Fixed", "Repeat Previous"], horizontal=True, label_visibility="collapsed")
+    _init("max_workers_param", _clamp(ui_saved.get("max_workers"), 1, 10, 2))
+    max_workers_param = st.slider(
+        "Parallel Requests (Speed)", min_value=1, max_value=10, step=1, key="max_workers_param",
+        help="Queries evaluated at the same time. Higher is faster but may overload DAVE or the judge.")
+
+    modes = ["Random", "Fixed", "Repeat Previous"]
+    _init("query_selection_mode_radio", ui_saved.get("selection_mode") if ui_saved.get("selection_mode") in modes else "Random")
+    query_selection_mode = st.radio(
+        "Selection Mode", options=modes, horizontal=True, key="query_selection_mode_radio",
+        help="Random: new queries each run. Fixed: always the same first queries. "
+             "Repeat Previous: the queries of the last saved evaluation, for a like-for-like comparison.")
+
+    # the benchmark selection is saved only when it differs from the default (the indexed ones),
+    # so the default keeps following what has been indexed
+    _persist({"ui": {
+        "rag_base_url": rag_base_url.strip(),
+        "engine": motore_rag,
+        "benchmarks": None if set(selected_names) == set(default_benchmarks) else selected_names,
+        "sample_size": int(sample_size_param),
+        "metrics": selected_metrics,
+        "max_workers": int(max_workers_param),
+        "selection_mode": query_selection_mode,
+    }})
 
     st.markdown('<hr class="sidebar-divider">', unsafe_allow_html=True)
 
     st.markdown("### Evaluation Name")
-    st.markdown('<p class="sidebar-label">Evaluation Name <span style="color:#FF5252">*</span></p>', unsafe_allow_html=True)
     eval_name_input = st.text_input(
-        "eval_name_input",
-        placeholder="e.g. test_bm25_v1",
-        label_visibility="collapsed",
-    )
+        "Evaluation Name *", placeholder="e.g. test_bm25_v1", key="eval_name_input",
+        help="Label used to save the run; it appears in the Explore tab.")
     eval_name = eval_name_input.strip() if eval_name_input else ""
 
     if not eval_name:
@@ -236,17 +378,10 @@ if not st.session_state.running and not st.session_state.results:
     saved_evals = list_evaluations()
     if saved_evals:
         last_eval = saved_evals[0]
-        complete_evals = load_evaluation(last_eval["filepath"])
-        loaded_results = complete_evals.get("results", [])
-        # retroactive classification for old evaluations (missing verdict or older taxonomy)
-        for rep in loaded_results:
-            if needs_reclassification(rep):
-                rep.update(classify_query_verdict(rep))
-        st.session_state.results = loaded_results
-        st.session_state.current_eval_name = complete_evals.get("name", "")
+        _open_evaluation(load_evaluation(last_eval["filepath"]))
 
 # main tabs
-tab_evaluation, tab_explore = st.tabs(["🔬 Evaluation", "📊 Explore"])
+tab_evaluation, tab_explore, tab_setup, tab_guide = st.tabs(["🔬 Evaluation", "📊 Explore", "🛠️ Setup", "📖 API Guide"])
 
 with tab_evaluation:
     if not st.session_state.running and st.session_state.get("eval_error"):
@@ -278,12 +413,28 @@ with tab_evaluation:
 
         # datasets are loaded from the selected files in the sidebar
         dataset_items = []
+        sampling_notes = []
         files_to_run = st.session_state.get("selected_files", list(BENCHMARK_MAPPING.values()))
         for file_name in files_to_run:
             path = RUN_DIR / file_name
             if path.exists():
                 # the gold "context" is never sent to the RAG: every benchmark retrieves over its corpus
                 elements = _load_benchmark_jsonl(path, skip_context=True)
+                # DAVE answers from the uploaded documents: ask only questions whose documents are there
+                if st.session_state.get("query_selection_mode") != "Repeat Previous":
+                    elements, info = answerable.filter_answerable(
+                        elements, None if "DAVE" in motore_rag else ingest_http.uploaded_names(rag_base_url))
+                    if info["indexed"] and info["tracked"]:
+                        note = f"{info['source']}: {info['answerable']} of {info['total']} queries are answerable with the uploaded documents"
+                        if info["unknown"]:
+                            note += f" ({info['unknown']} without document information, kept)"
+                        sampling_notes.append(note)
+                        if not elements:
+                            st.warning(f"{info['source']}: no query can be answered, upload its documents first (Setup tab).")
+                            continue
+                    elif info["tracked"] and info["source"] in answerable.COLLECTION:
+                        sampling_notes.append(f"{info['source']}: documents index missing, no filtering "
+                                              "(Setup tab > Build benchmark files)")
                 if st.session_state.get("query_selection_mode") == "Repeat Previous":
                     if previous_eval_ids:
                         filtered_elements = [e for e in elements if e["id"] in previous_eval_ids]
@@ -318,6 +469,8 @@ with tab_evaluation:
                     else:
                         dataset_items.extend(elements[:size])
 
+        for note in sampling_notes:
+            st.caption(note)
         tot = len(dataset_items)
 
         # callback to update the streamlit progress bar
@@ -333,7 +486,7 @@ with tab_evaluation:
             elif phase == "done":
                 progress_bar.progress(1.0)
 
-        # placeholder per le statistiche dei token
+        # placeholder for the token statistics
         tps_placeholder = st.empty()
         def _tps_callback(total, input_tok, output_tok, max_input, tps):
             html = f'''
@@ -350,16 +503,15 @@ with tab_evaluation:
                 ui_reports = run_evaluation(
                     dataset=dataset_items,
                     rag_base_url=rag_base_url,
-                    threshold=threshold,
                     ollama_url=ollama_url,
                     ollama_model=ollama_model,
                     llm_api_key=llm_api_key,
                     progress_callback=_streamlit_progress,
                     tps_callback=_tps_callback,
                     motore_rag=motore_rag,
-                    benchmark_files=files_to_run,
+                    benchmark_files=None,  # a custom RAG gets its corpus from Setup > Generic RAG (HTTP)
                     selected_metrics=selected_metrics,
-                    max_workers=max_workers_param
+                    max_workers=max_workers_param,
                 )
             # if there is an error, show the message and reset results
             except RuntimeError as e:
@@ -377,10 +529,10 @@ with tab_evaluation:
                 results=ui_reports,
                 model=ollama_model,
                 endpoint=rag_base_url,
-                threshold=threshold,
                 sample_size=st.session_state.get('sample_size_param', 3),
                 benchmarks_used=files_to_run,
-                rag_engine=motore_rag,
+                rag_engine=(f"{motore_rag} · {DAVE_RETRIEVAL_METHODS.get(dave_settings(st.session_state.cfg)['retrieval_method'], '')}"
+                            if "DAVE" in motore_rag else motore_rag),
                 name=st.session_state.get('eval_name', ''),
                 config={
                     "selection_mode": st.session_state.get("query_selection_mode", "Random"),
@@ -391,6 +543,7 @@ with tab_evaluation:
                 },
             )
             st.session_state.last_saved_id = saved['id']
+            st.session_state.current_eval_filepath = saved['filepath']
             st.session_state.current_eval_name = saved['name']
 
         st.session_state.running = False
@@ -472,7 +625,7 @@ with tab_evaluation:
             pattern_counts[rep.get('error_pattern', 'UNKNOWN')] += 1
         st.markdown(dash.get_verdict_summary_html(reports), unsafe_allow_html=True)
         
-        with st.expander("📖 Mostra Legenda & Significato dei Pattern di Errore"):
+        with st.expander("📖 Show Legend & Meaning of the Error Patterns"):
             st.markdown(get_pattern_legend_html(), unsafe_allow_html=True)
 
         # results table
@@ -521,9 +674,9 @@ with tab_evaluation:
         
         col_f1, col_f2 = st.columns(2)
         with col_f1:
-            filter_verdict = st.multiselect("Filtra per Verdetto", options=all_verdicts, default=[], placeholder="Tutti i verdetti")
+            filter_verdict = st.multiselect("Filter by Verdict", options=all_verdicts, default=[], placeholder="All verdicts")
         with col_f2:
-            filter_pattern = st.multiselect("Filtra per Pattern di Errore", options=all_patterns, default=[], placeholder="Tutti i pattern")
+            filter_pattern = st.multiselect("Filter by Error Pattern", options=all_patterns, default=[], placeholder="All patterns")
             
         filtered_reports = reports
         if filter_verdict:
@@ -532,7 +685,7 @@ with tab_evaluation:
             filtered_reports = [r for r in filtered_reports if r.get('error_pattern_label') in filter_pattern]
 
         if not filtered_reports:
-            st.info("Nessuna query corrisponde ai filtri selezionati.")
+            st.info("No query matches the selected filters.")
             
         for rep in filtered_reports:
             corr = metric_value(rep, 'correctness_voto')
@@ -639,30 +792,36 @@ BEST QUERY:
 
 Write a clean, easy-to-read Markdown report with these sections:
 
-### 📊 Summary
+### Summary
 2-3 concise sentences summarizing what the numbers show.
 
-### ✅ Strengths
+### Strengths
 - 2 bullet points on what works well.
 
-### ⚠️ Main Bottlenecks
+### Main Bottlenecks
 - 2 bullet points explaining where and why it fails (cite the metrics or benchmark).
 
-### 🔧 Recommended Fixes
+### Recommended Fixes
 - 3 clear, actionable engineering steps to solve the issue.
 
-### 🔮 Next Steps
+### Next Steps
 - 2 future architecture enhancements.
 
-Keep the language clear, concise and directly actionable. Total length under 300 words."""
+Keep the language clear, concise and directly actionable. Do not use emojis. Total length under 300 words."""
 
-                st.session_state.llm_advice = invoke_ollama(PROMPT_EXPERT, ollama_url, ollama_model, llm_api_key)
+                report = invoke_ollama(PROMPT_EXPERT, ollama_url, ollama_model, llm_api_key)
+                st.session_state.llm_advice = report
+                # stored in the evaluation file: reloading the page does not generate it again
+                eval_path = st.session_state.get("current_eval_filepath")
+                if report and eval_path and Path(eval_path).exists():
+                    set_expert_report(eval_path, report)
 
         llm_advice_text = st.session_state.get("llm_advice", "")
 
         if llm_advice_text:
             # LLM output is untrusted (it echoes benchmark documents): escape any HTML, the Markdown still renders
-            st.markdown(f'<div class="expert-report-card">{escape(llm_advice_text, quote=False)}</div>', unsafe_allow_html=True)
+            with st.container(key="expert_report"):
+                st.markdown(_style_report(escape(llm_advice_text, quote=False)))
         else:
             st.info("Expert analysis not available. Make sure the LLM Judge is accessible.")
 
@@ -728,13 +887,7 @@ with tab_explore:
 
             with col_load:
                 if st.button("📂 Open", key=f"explore_load_{idx}", width='stretch'):
-                    full_eval = load_evaluation(ev["filepath"])
-                    loaded_results = full_eval.get("results", [])
-                    for rep in loaded_results:
-                        if needs_reclassification(rep):
-                            rep.update(classify_query_verdict(rep))
-                    st.session_state.results = loaded_results
-                    st.session_state.current_eval_name = full_eval.get("name", "")
+                    _open_evaluation(load_evaluation(ev["filepath"]))
                     st.session_state.explore_msg = f"✅ Data for '{ev['name']}' loaded! Switch to the '🔬 Evaluation' tab above to view it."
                     st.rerun()
 
@@ -899,7 +1052,7 @@ with tab_explore:
                         # delta analysis between evaluations
                         if len(eval_names_with_data) == 2:
                             st.markdown("---")
-                            st.markdown("##### 📊 Delta Analysis")
+                            st.markdown("##### Delta Analysis")
                             res_a = query_results_map[selected_qid][eval_names_with_data[0]]
                             res_b = query_results_map[selected_qid][eval_names_with_data[1]]
                             delta_cols = st.columns(5)
@@ -1101,30 +1254,411 @@ Here are the evaluations being compared:
 
 Write a structured Markdown comparison report with these sections:
 
-## 📊 Comparative Overview
+## Comparative Overview
 Brief summary comparing the evaluations (which is better overall and by how much).
 
-## ⚔️ Head-to-Head Analysis
+## Head-to-Head Analysis
 For each key metric (Correctness, Faithfulness, Context Precision, Context Recall), explain which evaluation wins and what that implies about the RAG pipeline or LLM Judge.
 
-## ✅ What Works Best
+## What Works Best
 Identify the strongest configuration and explain WHY it works better (2-3 bullet points).
 
-## ❌ Key Weaknesses Found
+## Key Weaknesses Found
 Highlight the weakest areas across both evaluations (2-3 bullet points with specific metric evidence).
 
-## 🔧 Recommended Actions
+## Recommended Actions
 Give 3-4 concrete, actionable technical recommendations to improve the weaker system (e.g., "Switch from BM25 to hybrid search", "Increase chunk overlap", "Add a re-ranking step with cross-encoder").
 
-## 🔮 Strategic Outlook
+## Strategic Outlook
 2 forward-looking suggestions for the overall RAG architecture evolution.
 
-Write in English, be specific with numbers, keep it under 500 words total."""
+Write in English, be specific with numbers, do not use emojis, keep it under 500 words total."""
 
                             st.session_state[compare_report_key] = invoke_ollama(PROMPT_COMPARE, ollama_url, ollama_model)
                             st.rerun()
                 else:
-                    st.markdown(st.session_state[compare_report_key])
+                    st.markdown(_style_report(st.session_state[compare_report_key]))
                     if st.button("🔄 Regenerate Report", key="btn_regen_compare_report"):
                         del st.session_state[compare_report_key]
                         st.rerun()
+
+
+# setup tab - DAVE connection, corpus ingestion, benchmark files
+def _job_panel(name):
+    """Status, progress and log of a background job; refreshes alone while it runs."""
+    seen_key = f"job_seen_running_{name}"
+
+    def render():
+        snap = jobs.snapshot(name)
+        if snap is None:
+            return
+        if snap["running"]:
+            st.session_state[seen_key] = True
+            st.info(f"⏳ {snap['label']} — running for {snap['elapsed']}s")
+            if snap["progress"]:
+                st.caption(snap["progress"])
+            if st.button("Stop", key=f"w_stop_{name}"):
+                jobs.stop(name)
+        elif st.session_state.pop(seen_key, False):
+            st.rerun()  # just finished: refresh tables and buttons once
+        elif snap["returncode"] == 0:
+            st.success(f"✅ {snap['label']} finished in {snap['elapsed']}s")
+        else:
+            st.error(f"❌ {snap['label']} failed (exit code {snap['returncode']})")
+        if snap["lines"]:
+            st.code("\n".join(snap["lines"][-30:]), language=None)
+
+    st.fragment(render, run_every=2 if jobs.is_running(name) else None)()
+
+
+with tab_setup:
+    import ingest_dave
+    from dave_client import DaveClient
+
+    cfg = st.session_state.cfg
+    saved = dave_settings(cfg)
+
+    setup_dave, setup_rag = st.tabs(["DAVE", "Generic RAG (HTTP)"])
+
+    with setup_dave:
+        # 1. DAVE connection
+        st.subheader("DAVE Connection")
+        for k, v in saved.items():
+            _init(f"w_dave_{k}", v)
+        c1, c2 = st.columns(2)
+        with c1:
+            base_url = st.text_input("Base URL", key="w_dave_base_url", help="Address of the DAVE server, e.g. http://host:8001. Trailing slashes are removed.")
+            username = st.text_input("Username", key="w_dave_username", help="DAVE account used for login, ingestion and retrieval.")
+        with c2:
+            base_path = st.text_input("Base path", key="w_dave_base_path", help="Path prefix where DAVE is served, e.g. /holmes24. Leave empty if DAVE runs at the root of the URL.")
+            password = st.text_input("Password", key="w_dave_password", type="password",
+                                     help="Stored in config.json (chmod 600, git-ignored). Passed to jobs via environment variables, never on the command line.")
+
+        # 2. DAVE generation
+        st.subheader("DAVE Generation")
+        g1, g2, g3, g4, g5 = st.columns(5)
+        temperature = g1.number_input("temperature", 0.0, 2.0, step=0.1, key="w_dave_temperature",
+                                    help="Randomness of the answers. 0 = deterministic (best for comparable runs); higher = more varied.")
+        top_p = g2.number_input("top_p", 0.0, 1.0, step=0.05, key="w_dave_top_p",
+                                help="Nucleus sampling: only the most likely tokens whose probabilities sum to top_p are considered. 1.0 = off.")
+        max_tokens = g3.number_input("max_tokens", 16, 32768, step=64, key="w_dave_max_tokens",
+                                    help="Maximum length of each generated answer, in tokens.")
+        top_k = g4.number_input("top_k", 1, 200, key="w_dave_top_k",
+                                help="Sampling only from the k most likely tokens at each step.")
+        rep_pen = g5.number_input("repetition penalty", 1.0, 2.0, step=0.05, key="w_dave_repetition_penalty",
+                                  help="Penalizes tokens already generated, to reduce repetitions. 1.0 = off.")
+        st.caption("Defaults are deterministic so runs are comparable; DAVE's chat UI uses different values.")
+
+        dave_now = {
+            "base_url": base_url.strip().rstrip("/"),
+            "base_path": base_path.strip(),
+            "username": username.strip(),
+            "password": password,
+            "temperature": float(temperature),
+            "top_p": float(top_p),
+            "max_tokens": int(max_tokens),
+            "top_k": int(top_k),
+            "repetition_penalty": float(rep_pen),
+            "retrieval_method": saved["retrieval_method"] if "w_dave_retrieval_method" not in st.session_state
+                                else st.session_state.w_dave_retrieval_method,
+        }
+        if dave_now != cfg.get("dave"):
+            _persist({"dave": dave_now})
+            st.rerun()  # the next evaluation picks up the new settings
+        dave_ready = bool(dave_now["base_url"] and dave_now["username"] and dave_now["password"])
+
+        if st.button("Test DAVE login", key="w_dave_test"):
+            try:
+                DaveClient(**dave_now)
+                st.success("DAVE login OK")
+            except Exception as e:
+                st.error(f"DAVE login failed: {e}")
+
+        st.divider()
+
+        # 3. DAVE ingestion
+        st.subheader("DAVE Ingestion")
+        collections = ingest_dave.load_collections()
+        doc_cache = ingest_dave.load_doc_cache()
+        sources = {name: ingest_dave.find_source(name) for name in ingest_dave.INGESTERS}
+
+        def _answerable_label(name):
+            source = next((k for k, v in answerable.COLLECTION.items() if v == name), None)
+            found = answerable.counts(source) if source else None
+            return f"{found[0]} / {found[1]}" if found else ("all" if name == "OHRBench" else "-")
+        st.dataframe(pd.DataFrame([
+            {
+                "Benchmark": name,
+                "Corpus source": str(src.relative_to(ROOT_DIR)) if src else "missing",
+                "Collection ID": collections.get(name, ""),
+                "Docs indexed (local cache)": len(doc_cache.get(name, [])),
+                "Answerable queries": _answerable_label(name),
+            }
+            for name, src in sources.items()
+        ]), hide_index=True, width="stretch")
+
+        available = [n for n, src in sources.items() if src]
+        cfg_ingest = cfg.get("ingest", {})
+        default_sel = [n for n in available if n != "OHRBench" and n not in ingest_dave.DEFAULT_BENCHMARKS_EXCLUDED]
+        _init("w_ingest_benchmarks", [n for n in cfg_ingest.get("benchmarks", default_sel) if n in available])
+        st.session_state.w_ingest_benchmarks = [n for n in st.session_state.w_ingest_benchmarks if n in available]
+        sel_bench = st.multiselect(
+            "Benchmarks to upload", available, key="w_ingest_benchmarks",
+            help="Corpora to send to DAVE (only those found on disk). OHRBench is off by default because its documents travel with each question; MTRAG because its corpus is very large.",
+        )
+
+        _init("w_ingest_batch_docs", _clamp(cfg_ingest.get("batch_docs"), 1, 200, ingest_dave.MAX_BATCH_DOCS))
+        _init("w_ingest_batch_mb", _clamp(cfg_ingest.get("batch_mb"), 0.1, 500.0, ingest_dave.MAX_BATCH_BYTES / 2**20))
+        _init("w_ingest_sleep", _clamp(cfg_ingest.get("sleep"), 0.0, 120.0, float(ingest_dave.SLEEP_BETWEEN)))
+        _init("w_ingest_max_docs", _clamp(cfg_ingest.get("max_docs"), 0, 10**7, 0))
+
+        with st.expander("Batch settings"):
+            b1, b2, b3 = st.columns(3)
+            batch_docs = b1.number_input("Max docs per batch", 1, 200, key="w_ingest_batch_docs",
+                                      help="A batch is closed when it reaches this many documents (or the size limit).")
+            batch_mb = b2.number_input("Max MB per batch", 0.1, 500.0, step=0.1, key="w_ingest_batch_mb",
+                                    help="A batch is closed when its payload reaches this size (or the document limit). Lower it if the server rejects uploads.")
+            sleep_s = b3.number_input("Pause between batches (s)", 0.0, 120.0, step=1.0, key="w_ingest_sleep",
+                                    help="Wait after each batch so the DAVE server is not overloaded.")
+        max_docs = st.number_input(
+            "Max documents per benchmark (0 = all)", min_value=0, step=50, key="w_ingest_max_docs",
+            help="A random subset is uploaded. Documents already uploaded count towards the limit and are kept. "
+                 "Questions whose source document is missing can't be answered.",
+        )
+        _persist({"ingest": {
+            "benchmarks": sel_bench, "batch_docs": int(batch_docs), "batch_mb": float(batch_mb),
+            "sleep": float(sleep_s), "max_docs": int(max_docs),
+        }})
+
+        ingest_running = jobs.is_running("ingest")
+        blocked = ingest_running or not sel_bench or not dave_ready
+        _init("recreate_round", 0)
+
+        def _launch(label, extra, bench_args):
+            env = {**os.environ,
+                   "DAVE_BASE_URL": dave_now["base_url"], "DAVE_BASE_PATH": dave_now["base_path"],
+                   "DAVE_USERNAME": dave_now["username"], "DAVE_PASSWORD": dave_now["password"]}
+            args = [sys.executable, "-u", str(ROOT_DIR / "ingest_dave.py"), "--benchmarks", *sel_bench, *bench_args, *extra]
+            return jobs.start("ingest", args, label, env=env, cwd=str(ROOT_DIR))
+
+        upload_args = ["--batch-docs", str(int(batch_docs)), "--batch-mb", str(float(batch_mb)),
+                       "--sleep", str(float(sleep_s)), "--max-docs", str(int(max_docs))]
+
+        bt1, bt2, _ = st.columns([1, 1, 3])
+        if bt1.button("Start DAVE ingestion", type="primary", disabled=blocked, key="w_ingest_start"):
+            _launch("DAVE ingestion", [], upload_args)
+            st.rerun()
+        if bt2.button("Verify index", disabled=blocked, key="w_ingest_verify"):
+            _launch("DAVE index verification", ["--verify"], [])
+            st.rerun()
+
+        with st.expander("Recreate collections"):
+            st.caption("Creates new collections and re-uploads everything. The old ones stay on DAVE, unused: delete them there by hand.")
+            if sel_bench:
+                st.write("Selected: " + ", ".join(
+                    f"{n} (has collection)" if n in collections else n for n in sel_bench))
+            confirm_key = f"w_recreate_confirm_{st.session_state.recreate_round}"
+            confirmed = st.checkbox("I understand, create new collections and re-upload", key=confirm_key,
+                                  help="Required to enable the button. Resets after each launch.")
+            if st.button("Create new and re-upload", disabled=blocked or not confirmed, key="w_ingest_recreate"):
+                _launch("DAVE re-creation", ["--recreate"], upload_args)
+                st.session_state.recreate_round += 1  # the checkbox comes back unticked
+                st.rerun()
+
+        if not dave_ready:
+            st.caption("⚠️ Fill in URL, username and password to enable ingestion.")
+        _job_panel("ingest")
+
+        st.markdown("**Retrieval test**")
+        if collections:
+            r1, r2 = st.columns([1, 3])
+            test_col = r1.selectbox("Collection", list(collections), key="w_retr_collection",
+                                    help="DAVE collection to query (from .dave_collections.json).")
+            test_query = r2.text_input("Query", key="w_retr_query",
+                                       help="Test question: shows what DAVE retrieves, without running a full evaluation.")
+            if st.button("Retrieve", key="w_retr_go", disabled=not (dave_ready and test_query.strip())):
+                try:
+                    found = DaveClient(**dave_now).retrieve_chunks(test_query, collections[test_col])
+                    if found:
+                        st.write(f"{len(found)} documents")
+                        text = "\n".join(c.get("text", "") for c in found[0].get("chunks", []))
+                        st.code(text[:600], language=None)
+                    else:
+                        st.warning("No documents: collection empty or DAVE still indexing.")
+                except Exception as e:
+                    st.error(f"Retrieval failed: {e}")
+        else:
+            st.caption("No collections yet: run an ingestion first.")
+
+    with setup_rag:
+        st.caption("For any RAG that exposes the POST /ask and /ingest routes described in the API Guide tab. "
+                   "To evaluate it, choose **Custom RAG (HTTP)** in the sidebar.")
+
+        # 1. connection
+        st.subheader("Connection")
+        st.session_state.rag_url_setup = st.session_state.rag_url
+        st.text_input(
+            "Base URL", key="rag_url_setup", on_change=_sync_rag_url, args=("rag_url_setup",),
+            help="The tool calls <Base URL>/ask and <Base URL>/ingest. From the Docker container, a RAG running on "
+                 "the host is http://host.docker.internal:PORT, not localhost.")
+        rag_url = ingest_http.normalize_url(st.session_state.rag_url)
+        c1, c2 = st.columns([1, 3])
+        check_bench = c2.selectbox("Benchmark used for the test question", ingest_http.UPLOADABLE + ["OHRBench"],
+                                   index=2, key="w_rag_check_bench", label_visibility="collapsed")
+        if c1.button("Test endpoint", key="w_rag_check", disabled=not rag_url,
+                     help="Sends one sample question to <Base URL>/ask and checks the reply."):
+            with st.spinner("Waiting for your RAG..."):
+                checks = api_guide.check_endpoint(rag_url, answerable.COLLECTION_SOURCE.get(check_bench, check_bench))
+            for level, message in checks:
+                {"ok": st.success, "info": st.info, "warning": st.warning, "error": st.error}[level](message[:400])
+
+        st.divider()
+
+        # 2. corpus upload
+        st.subheader("Corpus Upload")
+        rag_uploaded = ingest_http.uploaded_names(rag_url)
+        rag_sources = {name: ingest_dave.find_source(name) for name in ingest_http.UPLOADABLE}
+
+        def _rag_answerable(name):
+            found = answerable.counts(ingest_http.SOURCE_OF[name], rag_uploaded) if name in rag_uploaded else None
+            return f"{found[0]} / {found[1]}" if found else "-"
+
+        st.dataframe(pd.DataFrame([
+            {
+                "Benchmark": name,
+                "Corpus source": str(src.relative_to(ROOT_DIR)) if src else "missing",
+                "Docs uploaded to this URL": len(rag_uploaded.get(name, [])),
+                "Answerable queries": _rag_answerable(name),
+            }
+            for name, src in rag_sources.items()
+        ]), hide_index=True, width="stretch")
+        st.caption("OHRBench is not listed: its documents travel with each question. A benchmark that was never "
+                   "uploaded from here is not filtered (the evaluation assumes your RAG is already indexed).")
+
+        rag_available = [n for n, src in rag_sources.items() if src]
+        cfg_rag = cfg.get("ingest_rag", {})
+        rag_default = [n for n in rag_available if n not in ingest_dave.DEFAULT_BENCHMARKS_EXCLUDED]
+        _init("w_rag_benchmarks", [n for n in cfg_rag.get("benchmarks", rag_default) if n in rag_available])
+        st.session_state.w_rag_benchmarks = [n for n in st.session_state.w_rag_benchmarks if n in rag_available]
+        rag_sel = st.multiselect(
+            "Benchmarks to upload", rag_available, key="w_rag_benchmarks",
+            help="Corpora to send to POST <Base URL>/ingest (only those found on disk). MTRAG is off by default "
+                 "because its corpus is very large.")
+
+        _init("w_rag_batch_docs", _clamp(cfg_rag.get("batch_docs"), 1, 5000, 100))
+        _init("w_rag_batch_mb", _clamp(cfg_rag.get("batch_mb"), 0.1, 500.0, 5.0))
+        _init("w_rag_sleep", _clamp(cfg_rag.get("sleep"), 0.0, 120.0, 0.0))
+        _init("w_rag_max_docs", _clamp(cfg_rag.get("max_docs"), 0, 10**7, 0))
+        with st.expander("Batch settings"):
+            g1, g2, g3 = st.columns(3)
+            rag_batch_docs = g1.number_input("Max docs per request", 1, 5000, key="w_rag_batch_docs",
+                                             help="A request is closed when it reaches this many documents (or the size limit).")
+            rag_batch_mb = g2.number_input("Max MB per request", 0.1, 500.0, step=0.1, key="w_rag_batch_mb",
+                                           help="A request is closed when its payload reaches this size (or the document limit).")
+            rag_sleep = g3.number_input("Pause between requests (s)", 0.0, 120.0, step=1.0, key="w_rag_sleep",
+                                        help="Wait after each request so your RAG is not overloaded.")
+        rag_max_docs = st.number_input(
+            "Max documents per benchmark (0 = all)", min_value=0, step=50, key="w_rag_max_docs",
+            help="A random subset is uploaded. Questions whose source document is not in the subset can't be "
+                 "answered: the evaluation skips them (see the Answerable queries column).")
+        _persist({"ingest_rag": {
+            "benchmarks": rag_sel, "batch_docs": int(rag_batch_docs), "batch_mb": float(rag_batch_mb),
+            "sleep": float(rag_sleep), "max_docs": int(rag_max_docs),
+        }})
+
+        rag_running = jobs.is_running("ingest_rag")
+        u1, u2, _ = st.columns([1, 1, 3])
+        if u1.button("Start corpus upload", type="primary", key="w_rag_upload",
+                     disabled=rag_running or not rag_sel or not rag_url,
+                     help="Replaces what your RAG holds for the selected benchmarks (the first request of each "
+                          "benchmark has batch.index 0)."):
+            jobs.start("ingest_rag", [
+                sys.executable, "-u", str(ROOT_DIR / "ingest_http.py"), "--url", rag_url, "--benchmarks", *rag_sel,
+                "--batch-docs", str(int(rag_batch_docs)), "--batch-mb", str(float(rag_batch_mb)),
+                "--sleep", str(float(rag_sleep)), "--max-docs", str(int(rag_max_docs)),
+            ], "Corpus upload to the generic RAG", cwd=str(ROOT_DIR))
+            st.rerun()
+        if u2.button("Forget uploads", key="w_rag_forget", disabled=rag_running or not rag_uploaded,
+                     help="Deletes only the local record of what was uploaded to this URL (your RAG is not touched). "
+                          "The evaluation then stops filtering questions for it."):
+            ingest_http.forget(rag_url)
+            st.rerun()
+        _job_panel("ingest_rag")
+
+    st.divider()
+
+    # shared: raw benchmarks and query files, used by both engines
+    st.subheader("Benchmark Files")
+
+    def _start_extract(names):
+        scripts = [str(RUN_DIR / EXTRACT_SCRIPTS[BENCHMARK_MAPPING[n]]) for n in names]
+        scripts.append(str(RUN_DIR / "build_gold_docs.py"))  # which documents each query needs
+        code = ("import runpy, sys\n"
+                "for p in sys.argv[1:]:\n"
+                "    print('== ' + p, flush=True)\n"
+                "    runpy.run_path(p, run_name='__main__')\n")
+        return jobs.start("extract", [sys.executable, "-u", "-c", code, *scripts],
+                          "Benchmark file extraction", cwd=str(ROOT_DIR))
+
+    # the raw benchmarks are not in the repository: download them from the official sources
+    if st.button("Download Benchmark", width='stretch', disabled=st.session_state.running,
+                 help="Downloads the raw files of the 6 benchmarks (~1 GB), extracts them into Benchmarks/ and builds the query files in Run/"):
+        # clicking Cancel makes Streamlit interrupt this run at the next progress update;
+        # build_benchmarks_zip then removes the partial zip and the temporary files
+        cancel_slot = st.empty()
+        cancel_slot.button("Cancel Download", width='stretch',
+                           on_click=lambda: st.session_state.update(download_cancelled=True))
+        bar = st.progress(0.0, text="Starting download...")
+
+        def _show_progress(step, n_steps, label, done, total):
+            fraction = (step + (done / total if total else 0)) / n_steps
+            size = f"{done / 2**20:.0f}/{total / 2**20:.0f} MB" if total else f"{done / 2**20:.0f} MB"
+            bar.progress(min(fraction, 1.0), text=f"[{step + 1}/{n_steps}] {label}: {size}")
+
+        try:
+            zip_path = build_benchmarks_zip(progress=_show_progress)
+            cancel_slot.empty()
+            bar.progress(1.0, text="Extracting files...")
+            out_dir = extract_benchmarks_zip(
+                zip_path, progress=lambda i, n: bar.progress(i / n, text=f"Extracting files: {i}/{n}"))
+            zip_path.unlink()  # extracted: the archive is no longer needed
+            bar.empty()
+            _start_extract(list(BENCHMARK_MAPPING))
+            st.session_state.download_msg = f"Downloaded and extracted into `{out_dir}`. Building the benchmark files..."
+            st.rerun()
+        except Exception as e:
+            cancel_slot.empty()
+            bar.empty()
+            st.error(f"Benchmark download failed: {e}")
+    elif st.session_state.pop("download_cancelled", False):
+        st.info("Download cancelled.")
+    if "download_msg" in st.session_state:
+        st.success(st.session_state.pop("download_msg"))
+
+    rows, missing_names = [], []
+    for name, fname in BENCHMARK_MAPPING.items():
+        path = RUN_DIR / fname
+        if not path.exists():
+            missing_names.append(name)
+        rows.append({
+            "Benchmark": name,
+            "File in Run/": fname,
+            "Size": f"{path.stat().st_size / 2**20:.1f} MB" if path.exists() else "missing",
+        })
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    _init("w_extract_benchmarks", missing_names)
+    st.session_state.w_extract_benchmarks = [
+        n for n in st.session_state.w_extract_benchmarks if n in BENCHMARK_MAPPING]
+    to_build = st.multiselect("Benchmarks to (re)build", list(BENCHMARK_MAPPING), key="w_extract_benchmarks",
+                          help="Runs the Run/extract_*.py scripts that turn the raw downloaded benchmarks into the query files. Missing ones are preselected.")
+    if st.button("Build benchmark files", disabled=jobs.is_running("extract") or not to_build,
+                 key="w_extract_start"):
+        _start_extract(to_build)
+        st.rerun()
+    _job_panel("extract")
+
+
+# api guide tab - how a third-party RAG must be structured
+with tab_guide:
+    api_guide.render(default_url=rag_base_url)

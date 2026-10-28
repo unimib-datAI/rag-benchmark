@@ -210,7 +210,7 @@ La dashboard si avvierà nel browser (di default su `http://localhost:8501`) e c
 #### 1. Tab "🔬 Evaluation"
 - **Configurazione Sidebar:**
   - Scelta del motore RAG (*Local RAG* o *DAVE*).
-  - Impostazione dell'URL base e della soglia di similarità semantica (*Threshold*).
+  - Impostazione dell'URL base.
   - Configurazione dell'LLM Judge (URL Ollama/OpenAI e API Key facoltativa).
   - Selezione mirata dei benchmark e delle metriche RAGAS da calcolare.
   - **Richieste in parallelo (Workers):** slider da 1 a 10 per velocizzare sensibilmente il calcolo delle metriche RAGAS.
@@ -252,7 +252,7 @@ Tutti i parametri possono essere passati direttamente come argomenti da linea di
 python webpage/cli.py --name "exp_llama3_run1" --engine "Local" --sample 5 --benchmarks SQUAD,LEGALBENCH --workers 4
 
 # Esecuzione su DAVE saltando l'ingestion preliminare
-python webpage/cli.py --name "test_dave_batch" --engine "DAVE" --sample 10 --no-ingest --threshold 0.35
+python webpage/cli.py --name "test_dave_batch" --engine "DAVE" --sample 10 --no-ingest
 
 # Utilizzo di un modello OpenAI/Cloud compatibile
 python webpage/cli.py --name "gpt4o_judge" --judge-url "https://api.openai.com/v1" --model "gpt-4o-mini" --api-key "sk-..."
@@ -268,7 +268,6 @@ python webpage/cli.py --list
 | `--name` | Nome identificativo della valutazione | `cli_run_YYYYMMDD_HHMMSS` |
 | `--engine` | Motore RAG target | `'Local'` oppure `'DAVE'` |
 | `--endpoint` | URL base del server RAG | Valore da `config.json` |
-| `--threshold` | Soglia di similarità semantica (0.0 - 1.0) | `0.3` |
 | `--judge-url` | Endpoint dell'LLM Judge | `http://localhost:11434` |
 | `--model` | Modello LLM Judge | `gemma4:31b-cloud` |
 | `--api-key` | API Key per endpoint cloud / OpenAI | `""` |
@@ -296,8 +295,7 @@ Conserva le impostazioni di default condivise da CLI e Web Dashboard:
     "benchmarks": "TUTTI",
     "sample_size": "3",
     "selection_mode": "R",
-    "motore_rag": "Local RAG (BM25)",
-    "threshold": "0.3"
+    "motore_rag": "Local RAG (BM25)"
 }
 ```
 

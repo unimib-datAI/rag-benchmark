@@ -236,3 +236,8 @@ Run/squad_corpus.json
 # Saved evaluations and papers
 valutazioni/
 Paper/
+# Docker volumes
+state/
+hf_cache/
+Run/gold_docs.json
+.rag_docs_cache.json

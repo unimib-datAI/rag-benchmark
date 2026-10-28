@@ -16,7 +16,8 @@ from pathlib import Path
 import requests
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = ROOT_DIR / "Benchmarks_download.zip"
+# inside Benchmarks/: in Docker the project root is read-only for the app user, Benchmarks/ is a mounted volume
+DEFAULT_OUTPUT = ROOT_DIR / "Benchmarks" / "Benchmarks_download.zip"
 
 sys.path.append(str(ROOT_DIR))
 from corpus_sources import OHR_VERSION
@@ -114,6 +115,7 @@ def build_benchmarks_zip(output=DEFAULT_OUTPUT, progress=None):
     download never leaves a truncated archive behind.
     """
     output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
     partial = output.with_name(output.name + ".part")
     n_steps = len(SOURCES)
     try:
@@ -138,10 +140,26 @@ def build_benchmarks_zip(output=DEFAULT_OUTPUT, progress=None):
     return output
 
 
+def extract_benchmarks_zip(zip_path=DEFAULT_OUTPUT, dest=ROOT_DIR, progress=None):
+    """Extract the zip in the project folder; progress(done, total) counts the archive members."""
+    dest = Path(dest).resolve()
+    with zipfile.ZipFile(zip_path) as zf:
+        members = zf.infolist()
+        for i, member in enumerate(members):
+            target = (dest / member.filename).resolve()
+            if dest != target and dest not in target.parents:  # refuse paths escaping the folder
+                raise RuntimeError(f"Unsafe path in archive: {member.filename}")
+            zf.extract(member, dest)
+            if progress:
+                progress(i + 1, len(members))
+    return dest / "Benchmarks"
+
+
 if __name__ == "__main__":
     def _print_progress(step, n_steps, label, done, total):
         size = f"{done / _CHUNK:.0f}/{total / _CHUNK:.0f} MB" if total else f"{done / _CHUNK:.0f} MB"
         print(f"\r[{step + 1}/{n_steps}] {label}: {size}".ljust(70), end="", flush=True)
 
     path = build_benchmarks_zip(progress=_print_progress)
-    print(f"\nSaved {path} - extract it in the project folder")
+    print(f"\nSaved {path}, extracting...")
+    print(f"Extracted in {extract_benchmarks_zip(path)}")

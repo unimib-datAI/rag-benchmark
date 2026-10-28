@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 import requests
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
@@ -101,7 +102,22 @@ class DaveClient:
         password: Optional[str] = None,
         base_url: Optional[str] = None,
         base_path: Optional[str] = None,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        max_tokens: int = 1024,
+        top_k: int = 50,
+        repetition_penalty: float = 1.0,
+        retrieval_method: str = "full",
     ):
+        # DAVE search.mostSimilarDocuments: "full" = hybrid, "dense", "full-text" = sparse
+        self.retrieval_method = retrieval_method or "full"
+        self.generation = {
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": int(max_tokens),
+            "top_k": int(top_k),
+            "repetition_penalty": repetition_penalty,
+        }
         self.username = username or os.environ.get("DAVE_USERNAME")
         self.password = password or os.environ.get("DAVE_PASSWORD")
         self.base_url = base_url or os.environ.get("DAVE_BASE_URL", NEXTJS_BASE_URL)
@@ -167,6 +183,45 @@ class DaveClient:
         )
         return job
 
+    def delete_collection(self, collection_id: str) -> None:
+        """Elimina una collezione e tutti i suoi documenti (irreversibile)."""
+        self._trpc_mutation("collection.delete", {"id": collection_id})
+
+    def list_documents(self, collection_id: str) -> List[str]:
+        """Nomi dei documenti presenti nella collezione (il nome è il fileName senza .txt)."""
+        res = self._trpc_query("collection.getCollectionInfo", {"id": collection_id})
+        return [d.get("name") for d in res if d.get("name")]
+
+    def wait_for_upload_job(
+        self, job_id: str, timeout: float = 3600, poll: float = 3, on_progress=None
+    ) -> Dict[str, Any]:
+        """Attende la fine di un job di upload e ne restituisce il record.
+
+        createUploadJob risponde subito: DAVE elabora i file in background, uno alla volta.
+        Stati del job: pending, processing, completed, completed_with_errors, failed, cancelled.
+        Ogni file ha status (pending/processing/completed/failed) ed eventuale error.
+        """
+        terminal = {"completed", "completed_with_errors", "failed", "cancelled"}
+        deadline = time.time() + timeout
+        errors = 0
+        while True:
+            try:
+                job = self.get_upload_job_status(job_id)
+                errors = 0
+            except Exception:
+                errors += 1  # errore di rete passeggero: riprova
+                if errors >= 5:
+                    raise
+                job = None
+            if job:
+                if on_progress:
+                    on_progress(job)
+                if job.get("status") in terminal:
+                    return job
+            if time.time() > deadline:
+                raise TimeoutError(f"Job {job_id} non terminato entro {int(timeout)}s")
+            time.sleep(poll)
+
     def get_upload_job_status(self, job_id: str) -> Dict[str, Any]:
         """Verifica lo stato di avanzamento di un job di caricamento."""
         return self._trpc_query("document.getUploadJob", {"jobId": job_id})
@@ -188,7 +243,7 @@ class DaveClient:
             {
                 "query": query,
                 "collectionId": collection_id,
-                "retrievalMethod": "full",
+                "retrievalMethod": self.retrieval_method,
             },
         ) or []
         chunks: List[Dict[str, Any]] = []
@@ -243,8 +298,7 @@ class DaveClient:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": question},
             ],
-            "max_tokens": 1024,
-            "temperature": 0.0,
+            **self.generation,
         }
         if collection_id:
             payload["collectionId"] = collection_id
@@ -279,7 +333,7 @@ def main():
         print(f"     Server base: {client.base_url}{client.base_path}")
         print(f"     Utente: {client.username}")
 
-        col_file = Path(__file__).resolve().parent / ".dave_collections.json"
+        col_file = Path(os.environ.get("STATE_DIR") or Path(__file__).resolve().parent) / ".dave_collections.json"
         if col_file.exists():
             with open(col_file, "r", encoding="utf-8") as f:
                 cols = json.load(f)

@@ -77,9 +77,9 @@ Solo se utilizzi **DAVE**: i documenti del corpus devono essere caricati e indic
    ```
 2. Carica il corpus:
    ```bash
-   python ingest_dave.py Nuovo --wait
+   python ingest_dave.py --benchmarks Nuovo
    ```
-   Lo script crea la collection (se non esiste) e invia i documenti a lotti, saltando quelli già caricati grazie alla cache locale (`.dave_docs_cache.json`). Con `--wait` attende che DAVE li abbia indicizzati e ricarica quelli falliti.
+   Lo script crea la collection (se non esiste) e invia i documenti a lotti, saltando quelli già caricati grazie alla cache locale (`.dave_docs_cache.json`). Poi attende che DAVE li abbia indicizzati e ricarica quelli falliti (`--no-wait` per saltare l'attesa; `--recreate` crea una nuova collection (la vecchia resta su DAVE); `--verify` confronta cache e DAVE).
 
 ---
 
