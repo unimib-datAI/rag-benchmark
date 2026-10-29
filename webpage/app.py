@@ -25,6 +25,7 @@ import jobs
 from settings import load_config, save_config, dave_settings, DAVE_RETRIEVAL_METHODS
 
 import dashboard as dash
+import devmode  # DEV MODE
 from dashboard import get_pattern_legend_html
 
 st.set_page_config(
@@ -63,6 +64,45 @@ EXTRACT_SCRIPTS = {
     "Tutto_OHRBench_DAVE.jsonl": "extract_ohrbench.py",
     "Tutto_SQUAD.jsonl": "extract_squad.py",
 }
+
+BENCHMARK_DESCRIPTIONS = {
+    "LegalBench-RAG (Contract Precision)": "Real legal contracts (691). Tests extracting precise contract clauses without hallucinating or paraphrasing.",
+    "MultiHop-RAG (Multi-Document Synthesis)": "Multi-document synthesis over 609 news articles. Needs reasoning and aggregating information spread across 2 to 4 documents.",
+    "CRAG (HTML Parsing & Traps)": "Web HTML and noise (Meta CRAG). Measures resilience to unstructured web pages, noisy fragments and questions with false premises.",
+    "MTRAG (Multi-Turn Conversations)": "Multi-turn dialogues. Checks handling of the conversation memory and of context-dependent references.",
+    "OHRBench (OCR Noise / Scans)": "Scans and OCR noise. Business and academic documents with corrupted tables, degraded characters and math formulas.",
+    "SQuAD-it (Italian Q&A on Wikipedia)": "Italian reading comprehension (2,007 Wikipedia paragraphs). Tests extraction on Italian texts and queries.",
+}
+
+
+_COUNTS_FILE = Path(os.environ.get("STATE_DIR") or Path(__file__).resolve().parents[1]) / ".catalogue_counts.json"
+
+
+def _count_queries(path):
+    """Number of queries (lines) of a Run/Tutto_*.jsonl file. The files are huge (CRAG is several GB),
+    so the count is read once and kept in a small file until the size or date of the file changes."""
+    stat = path.stat()
+    signature = [stat.st_size, int(stat.st_mtime)]
+    try:
+        counts = json.loads(_COUNTS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        counts = {}
+    entry = counts.get(path.name)
+    if entry and entry[:2] == signature:
+        return entry[2]
+    lines, last = 0, b"\n"
+    with open(path, "rb") as f:
+        while chunk := f.read(64 * 1024 * 1024):
+            lines += chunk.count(b"\n")
+            last = chunk[-1:]
+    lines += last != b"\n"  # last line without a trailing newline
+    counts[path.name] = [*signature, lines]
+    try:
+        _COUNTS_FILE.write_text(json.dumps(counts), encoding="utf-8")
+    except OSError:
+        pass  # read-only folder: the count is just recomputed next time
+    return lines
+
 
 BENCHMARK_SHORT = {
     "LegalBench-RAG": "LegalBench",
@@ -201,11 +241,13 @@ if "current_eval_name" not in st.session_state:
 
 # sidebar
 with st.sidebar:
+    devmode.sidebar_switch()  # DEV MODE
     st.header("⚙️ RAG Engine Settings")
     # sidebar settings are kept in config.json ("ui") so a page reload does not lose them
     ui_saved = st.session_state.cfg.get("ui", {})
     ENGINES = ["DAVE (Elasticsearch)", "Custom RAG (HTTP)"]
     _init("engine_select", ui_saved.get("engine") if ui_saved.get("engine") in ENGINES else ENGINES[0])
+    devmode.force_engine(ENGINES[0])  # DEV MODE: behind the scenes the engine is DAVE
     motore_rag = st.radio(
         "RAG Engine", ENGINES, key="engine_select",
         help="DAVE: the DAVE server configured in the Setup tab. Custom RAG: your own RAG, reached over HTTP "
@@ -215,6 +257,8 @@ with st.sidebar:
         _init("w_dave_retrieval_method", dave_settings(st.session_state.cfg)["retrieval_method"])
         if st.session_state.w_dave_retrieval_method not in DAVE_RETRIEVAL_METHODS:
             st.session_state.w_dave_retrieval_method = "full"
+        if devmode.active() and devmode.retrieval_from_url():  # DEV MODE: the URL picks the retrieval type
+            st.session_state.w_dave_retrieval_method = devmode.retrieval_from_url()
         dave_retrieval = st.radio(
             "DAVE Retrieval Type", list(DAVE_RETRIEVAL_METHODS), format_func=DAVE_RETRIEVAL_METHODS.get,
             key="w_dave_retrieval_method",
@@ -381,7 +425,8 @@ if not st.session_state.running and not st.session_state.results:
         _open_evaluation(load_evaluation(last_eval["filepath"]))
 
 # main tabs
-tab_evaluation, tab_explore, tab_setup, tab_guide = st.tabs(["🔬 Evaluation", "📊 Explore", "🛠️ Setup", "📖 API Guide"])
+tab_evaluation, tab_explore, tab_catalogue, tab_setup, tab_guide = st.tabs(
+    ["🔬 Evaluation", "📊 Explore", "📚 Catalogue", "🛠️ Setup", "📖 API Guide"])
 
 with tab_evaluation:
     if not st.session_state.running and st.session_state.get("eval_error"):
@@ -1284,6 +1329,13 @@ Write in English, be specific with numbers, do not use emojis, keep it under 500
 
 
 # setup tab - DAVE connection, corpus ingestion, benchmark files
+def _dave_env(dave_now):
+    """Environment of the ingest_dave.py subprocess: the DAVE connection typed in Setup."""
+    return {**os.environ,
+            "DAVE_BASE_URL": dave_now["base_url"], "DAVE_BASE_PATH": dave_now["base_path"],
+            "DAVE_USERNAME": dave_now["username"], "DAVE_PASSWORD": dave_now["password"]}
+
+
 def _job_panel(name):
     """Status, progress and log of a background job; refreshes alone while it runs."""
     seen_key = f"job_seen_running_{name}"
@@ -1306,9 +1358,142 @@ def _job_panel(name):
         else:
             st.error(f"❌ {snap['label']} failed (exit code {snap['returncode']})")
         if snap["lines"]:
-            st.code("\n".join(snap["lines"][-30:]), language=None)
+            log = "\n".join(snap["lines"][-30:])
+            st.code(log.replace("DAVE", "RAG") if devmode.active() else log, language=None)  # DEV MODE
+
 
     st.fragment(render, run_every=2 if jobs.is_running(name) else None)()
+
+
+with tab_catalogue:
+    # raw benchmarks and query files, used by both engines
+    st.caption("Download the benchmarks here. Only the downloaded ones can be indexed into the RAG from the Setup tab.")
+
+    def _start_extract(names):
+        scripts = [str(RUN_DIR / EXTRACT_SCRIPTS[BENCHMARK_MAPPING[n]]) for n in names]
+        scripts.append(str(RUN_DIR / "build_gold_docs.py"))  # which documents each query needs
+        code = ("import runpy, sys\n"
+                "for p in sys.argv[1:]:\n"
+                "    print('== ' + p, flush=True)\n"
+                "    runpy.run_path(p, run_name='__main__')\n")
+        return jobs.start("extract", [sys.executable, "-u", "-c", code, *scripts],
+                          "Benchmark file extraction", cwd=str(ROOT_DIR))
+
+    import ingest_dave
+
+    # a fragment: ticking a box or typing in the search reruns only this part, not the whole app
+    @st.fragment
+    def _catalogue():
+        catalogue_search = st.text_input(
+            "Search", key="w_catalogue_search", placeholder="Search a benchmark by name or description",
+            label_visibility="collapsed")
+        terms = catalogue_search.lower().split()
+
+        def _download_name(name):
+            """Name of the benchmark in benchmark_download.BENCHMARKS."""
+            return next(k for k in BENCHMARK_SHORT if name.startswith(k))
+
+        def _short(name):
+            return BENCHMARK_SHORT[_download_name(name)]
+
+        def _downloaded(name):
+            """Corpus on disk: what the Setup tab needs to index it."""
+            return ingest_dave.find_source(_short(name)) is not None
+
+        # a plain table of page elements (not a canvas grid): every row always shows its own checkbox
+        widths = [0.6, 2.4, 5, 1.8, 1.2, 1.2]
+        header = st.columns(widths)
+        for col, label in zip(header, ["", "Benchmark", "Description", "Status", "Queries", "Size"]):
+            if label:  # the checkbox column has no title
+                col.markdown(f"**{label}**")
+        selected, shown = [], 0
+        for name, fname in BENCHMARK_MAPPING.items():
+            path = RUN_DIR / fname
+            description = BENCHMARK_DESCRIPTIONS.get(name, "")
+            if not all(term in f"{name} {description}".lower() for term in terms):
+                continue  # the search looks at name and description only, never at the content
+            shown += 1
+            cells = st.columns(widths, vertical_alignment="center")
+            if cells[0].checkbox(f"Select {name}", key=f"w_catalogue_sel_{_short(name)}", label_visibility="collapsed"):
+                selected.append(name)
+            cells[1].markdown(f"**{name}**")
+            cells[2].write(description)
+            cells[3].write("✅ Downloaded" if _downloaded(name) else "Not downloaded")
+            cells[4].write(f"{_count_queries(path):,}" if path.exists() else "-")
+            cells[5].write(f"{path.stat().st_size / 2**20:.1f} MB" if path.exists() else "-")
+        # DEV MODE: placeholder datasets, they only look downloaded (see devmode.py)
+        for index, (name, description, count) in enumerate(devmode.catalogue_placeholders(BENCHMARK_SHORT)):
+            if not all(term in f"{name} {description}".lower() for term in terms):
+                continue
+            shown += 1
+            cells = st.columns(widths, vertical_alignment="center")
+            if cells[0].checkbox(f"Select {name}", key=f"w_catalogue_sel_placeholder_{index}", label_visibility="collapsed"):
+                selected.append(name)
+            cells[1].markdown(f"**{name}**")
+            cells[2].write(description)
+            cells[3].write("✅ Downloaded" if devmode.is_marked_downloaded(name) else "Not downloaded")
+            cells[4].write(count or "-")
+            cells[5].write("-")
+        if not shown:
+            st.info("No benchmark matches the search.")
+
+        # the raw benchmarks are not in the repository: download the selected ones from the official sources
+        def _mark_placeholders():  # DEV MODE: runs before the table is drawn, so the status updates at once
+            devmode.mark_downloaded([
+                name for i, (name, _, _) in enumerate(devmode.catalogue_placeholders(BENCHMARK_SHORT))
+                if st.session_state.get(f"w_catalogue_sel_placeholder_{i}")])
+
+        d1, d2, _ = st.columns([1, 1, 3])
+        if d1.button("Download selected", type="primary", on_click=_mark_placeholders, disabled=st.session_state.running or not selected,
+                     key="w_catalogue_download",
+                     help="Downloads the raw files of the selected benchmarks, extracts them into Benchmarks/ and "
+                          "builds their query files in Run/. Tick the benchmarks in the table first."):
+            real = [n for n in selected if n in BENCHMARK_MAPPING]
+            if not real:  # only DEV MODE placeholders: already marked by the click callback, nothing to fetch
+                st.session_state.download_msg = "Downloaded: " + ", ".join(selected)
+            if real:
+                # clicking Cancel makes Streamlit interrupt this run at the next progress update;
+                # build_benchmarks_zip then removes the partial zip and the temporary files
+                cancel_slot = st.empty()
+                cancel_slot.button("Cancel Download", width='stretch',
+                                   on_click=lambda: st.session_state.update(download_cancelled=True))
+                bar = st.progress(0.0, text="Starting download...")
+
+                def _show_progress(step, n_steps, label, done, total):
+                    fraction = (step + (done / total if total else 0)) / n_steps
+                    size = f"{done / 2**20:.0f}/{total / 2**20:.0f} MB" if total else f"{done / 2**20:.0f} MB"
+                    bar.progress(min(fraction, 1.0), text=f"[{step + 1}/{n_steps}] {label}: {size}")
+
+                try:
+                    zip_path = build_benchmarks_zip(progress=_show_progress, benchmarks=[_download_name(n) for n in real])
+                    cancel_slot.empty()
+                    bar.progress(1.0, text="Extracting files...")
+                    out_dir = extract_benchmarks_zip(
+                        zip_path, progress=lambda i, n: bar.progress(i / n, text=f"Extracting files: {i}/{n}"))
+                    zip_path.unlink()  # extracted: the archive is no longer needed
+                    bar.empty()
+                    _start_extract(real)
+                    st.session_state.download_msg = f"Downloaded and extracted into `{out_dir}`. Building the benchmark files..."
+                    st.rerun()
+                except Exception as e:
+                    cancel_slot.empty()
+                    bar.empty()
+                    st.error(f"Benchmark download failed: {e}")
+        elif st.session_state.pop("download_cancelled", False):
+            st.info("Download cancelled.")
+        if "download_msg" in st.session_state:
+            st.success(st.session_state.pop("download_msg"))
+
+        if d2.button("Build query files", disabled=jobs.is_running("extract") or not selected, key="w_extract_start",
+                     help="Runs the Run/extract_*.py scripts of the selected benchmarks again, on the raw files already "
+                          "downloaded, to rebuild their query files."):
+            real = [n for n in selected if n in BENCHMARK_MAPPING]
+            if real:  # DEV MODE placeholders have nothing to build
+                _start_extract(real)
+            st.rerun()
+
+    _catalogue()
+    _job_panel("extract")
 
 
 with tab_setup:
@@ -1318,7 +1503,10 @@ with tab_setup:
     cfg = st.session_state.cfg
     saved = dave_settings(cfg)
 
-    setup_dave, setup_rag = st.tabs(["DAVE", "Generic RAG (HTTP)"])
+    if devmode.active():  # DEV MODE: no tabs, the DAVE part still runs inside a container that is only hidden
+        setup_rag, setup_dave = st.container(), st.container(key="dave_setup_hidden")
+    else:
+        setup_dave, setup_rag = st.tabs(["DAVE", "Generic RAG (HTTP)"])
 
     with setup_dave:
         # 1. DAVE connection
@@ -1394,8 +1582,10 @@ with tab_setup:
                 "Docs indexed (local cache)": len(doc_cache.get(name, [])),
                 "Answerable queries": _answerable_label(name),
             }
-            for name, src in sources.items()
+            for name, src in sources.items() if src  # only the downloaded ones (Catalogue tab)
         ]), hide_index=True, width="stretch")
+        if not any(sources.values()):
+            st.info("No benchmark downloaded yet: download them in the Catalogue tab.")
 
         available = [n for n, src in sources.items() if src]
         cfg_ingest = cfg.get("ingest", {})
@@ -1435,9 +1625,7 @@ with tab_setup:
         _init("recreate_round", 0)
 
         def _launch(label, extra, bench_args):
-            env = {**os.environ,
-                   "DAVE_BASE_URL": dave_now["base_url"], "DAVE_BASE_PATH": dave_now["base_path"],
-                   "DAVE_USERNAME": dave_now["username"], "DAVE_PASSWORD": dave_now["password"]}
+            env = _dave_env(dave_now)
             args = [sys.executable, "-u", str(ROOT_DIR / "ingest_dave.py"), "--benchmarks", *sel_bench, *bench_args, *extra]
             return jobs.start("ingest", args, label, env=env, cwd=str(ROOT_DIR))
 
@@ -1517,6 +1705,8 @@ with tab_setup:
         # 2. corpus upload
         st.subheader("Corpus Upload")
         rag_uploaded = ingest_http.uploaded_names(rag_url)
+        if devmode.active():  # DEV MODE: the documents really are in DAVE
+            rag_uploaded = ingest_dave.load_doc_cache()
         rag_sources = {name: ingest_dave.find_source(name) for name in ingest_http.UPLOADABLE}
 
         def _rag_answerable(name):
@@ -1530,8 +1720,10 @@ with tab_setup:
                 "Docs uploaded to this URL": len(rag_uploaded.get(name, [])),
                 "Answerable queries": _rag_answerable(name),
             }
-            for name, src in rag_sources.items()
+            for name, src in rag_sources.items() if src  # only the downloaded ones (Catalogue tab)
         ]), hide_index=True, width="stretch")
+        if not any(rag_sources.values()):
+            st.info("No benchmark downloaded yet: download them in the Catalogue tab.")
         st.caption("OHRBench is not listed: its documents travel with each question. A benchmark that was never "
                    "uploaded from here is not filtered (the evaluation assumes your RAG is already indexed).")
 
@@ -1569,94 +1761,27 @@ with tab_setup:
         rag_running = jobs.is_running("ingest_rag")
         u1, u2, _ = st.columns([1, 1, 3])
         if u1.button("Start corpus upload", type="primary", key="w_rag_upload",
-                     disabled=rag_running or not rag_sel or not rag_url,
+                     disabled=rag_running or not rag_sel or not (dave_ready if devmode.active() else rag_url),
                      help="Replaces what your RAG holds for the selected benchmarks (the first request of each "
                           "benchmark has batch.index 0)."):
-            jobs.start("ingest_rag", [
-                sys.executable, "-u", str(ROOT_DIR / "ingest_http.py"), "--url", rag_url, "--benchmarks", *rag_sel,
-                "--batch-docs", str(int(rag_batch_docs)), "--batch-mb", str(float(rag_batch_mb)),
-                "--sleep", str(float(rag_sleep)), "--max-docs", str(int(rag_max_docs)),
-            ], "Corpus upload to the generic RAG", cwd=str(ROOT_DIR))
+            batch_args = ["--batch-docs", str(int(rag_batch_docs)), "--batch-mb", str(float(rag_batch_mb)),
+                          "--sleep", str(float(rag_sleep)), "--max-docs", str(int(rag_max_docs))]
+            if devmode.active():  # DEV MODE: same settings and look, but the corpus goes to DAVE
+                jobs.start("ingest_rag", [sys.executable, "-u", str(ROOT_DIR / "ingest_dave.py"),
+                                          "--benchmarks", *rag_sel, *batch_args],
+                           "Corpus upload to the generic RAG", env=_dave_env(dave_now), cwd=str(ROOT_DIR))
+            else:
+                jobs.start("ingest_rag", [
+                    sys.executable, "-u", str(ROOT_DIR / "ingest_http.py"), "--url", rag_url, "--benchmarks", *rag_sel,
+                    *batch_args,
+                ], "Corpus upload to the generic RAG", cwd=str(ROOT_DIR))
             st.rerun()
-        if u2.button("Forget uploads", key="w_rag_forget", disabled=rag_running or not rag_uploaded,
+        if u2.button("Forget uploads", key="w_rag_forget", disabled=rag_running or not rag_uploaded or devmode.active(),
                      help="Deletes only the local record of what was uploaded to this URL (your RAG is not touched). "
                           "The evaluation then stops filtering questions for it."):
             ingest_http.forget(rag_url)
             st.rerun()
         _job_panel("ingest_rag")
-
-    st.divider()
-
-    # shared: raw benchmarks and query files, used by both engines
-    st.subheader("Benchmark Files")
-
-    def _start_extract(names):
-        scripts = [str(RUN_DIR / EXTRACT_SCRIPTS[BENCHMARK_MAPPING[n]]) for n in names]
-        scripts.append(str(RUN_DIR / "build_gold_docs.py"))  # which documents each query needs
-        code = ("import runpy, sys\n"
-                "for p in sys.argv[1:]:\n"
-                "    print('== ' + p, flush=True)\n"
-                "    runpy.run_path(p, run_name='__main__')\n")
-        return jobs.start("extract", [sys.executable, "-u", "-c", code, *scripts],
-                          "Benchmark file extraction", cwd=str(ROOT_DIR))
-
-    # the raw benchmarks are not in the repository: download them from the official sources
-    if st.button("Download Benchmark", width='stretch', disabled=st.session_state.running,
-                 help="Downloads the raw files of the 6 benchmarks (~1 GB), extracts them into Benchmarks/ and builds the query files in Run/"):
-        # clicking Cancel makes Streamlit interrupt this run at the next progress update;
-        # build_benchmarks_zip then removes the partial zip and the temporary files
-        cancel_slot = st.empty()
-        cancel_slot.button("Cancel Download", width='stretch',
-                           on_click=lambda: st.session_state.update(download_cancelled=True))
-        bar = st.progress(0.0, text="Starting download...")
-
-        def _show_progress(step, n_steps, label, done, total):
-            fraction = (step + (done / total if total else 0)) / n_steps
-            size = f"{done / 2**20:.0f}/{total / 2**20:.0f} MB" if total else f"{done / 2**20:.0f} MB"
-            bar.progress(min(fraction, 1.0), text=f"[{step + 1}/{n_steps}] {label}: {size}")
-
-        try:
-            zip_path = build_benchmarks_zip(progress=_show_progress)
-            cancel_slot.empty()
-            bar.progress(1.0, text="Extracting files...")
-            out_dir = extract_benchmarks_zip(
-                zip_path, progress=lambda i, n: bar.progress(i / n, text=f"Extracting files: {i}/{n}"))
-            zip_path.unlink()  # extracted: the archive is no longer needed
-            bar.empty()
-            _start_extract(list(BENCHMARK_MAPPING))
-            st.session_state.download_msg = f"Downloaded and extracted into `{out_dir}`. Building the benchmark files..."
-            st.rerun()
-        except Exception as e:
-            cancel_slot.empty()
-            bar.empty()
-            st.error(f"Benchmark download failed: {e}")
-    elif st.session_state.pop("download_cancelled", False):
-        st.info("Download cancelled.")
-    if "download_msg" in st.session_state:
-        st.success(st.session_state.pop("download_msg"))
-
-    rows, missing_names = [], []
-    for name, fname in BENCHMARK_MAPPING.items():
-        path = RUN_DIR / fname
-        if not path.exists():
-            missing_names.append(name)
-        rows.append({
-            "Benchmark": name,
-            "File in Run/": fname,
-            "Size": f"{path.stat().st_size / 2**20:.1f} MB" if path.exists() else "missing",
-        })
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-
-    _init("w_extract_benchmarks", missing_names)
-    st.session_state.w_extract_benchmarks = [
-        n for n in st.session_state.w_extract_benchmarks if n in BENCHMARK_MAPPING]
-    to_build = st.multiselect("Benchmarks to (re)build", list(BENCHMARK_MAPPING), key="w_extract_benchmarks",
-                          help="Runs the Run/extract_*.py scripts that turn the raw downloaded benchmarks into the query files. Missing ones are preselected.")
-    if st.button("Build benchmark files", disabled=jobs.is_running("extract") or not to_build,
-                 key="w_extract_start"):
-        _start_extract(to_build)
-        st.rerun()
-    _job_panel("extract")
 
 
 # api guide tab - how a third-party RAG must be structured

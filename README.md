@@ -176,7 +176,7 @@ pip install -r requirements.txt
 Modifica `.env` inserendo le credenziali Keycloak e l'URL di DAVE se intendi testare tale motore.
 
 ### 5. Scaricare i Benchmark
-I dataset grezzi non sono inclusi nel repository. Nella sidebar della dashboard il pulsante **Download Benchmark** scarica dalle fonti ufficiali (GitHub, Hugging Face, Dropbox) solo i file usati dagli script di estrazione (~1 GB, compreso il corpus OCR di OHRBench) e li salva in `Benchmarks_download.zip` nella cartella del progetto. In alternativa, da terminale:
+I dataset grezzi non sono inclusi nel repository. Nel tab **📚 Catalogue** della dashboard si spuntano nella tabella i benchmark desiderati e il pulsante **Download selected** scarica dalle fonti ufficiali (GitHub, Hugging Face, Dropbox) solo i file usati dagli script di estrazione dei benchmark scelti (~1 GB per tutti, compreso il corpus OCR di OHRBench) e li salva in `Benchmarks_download.zip` nella cartella del progetto. In alternativa, da terminale (senza argomenti scarica tutti; altrimenti i nomi dei benchmark, es. `SQuAD-it CRAG`):
 
 ```bash
 python webpage/benchmark_download.py
@@ -205,7 +205,7 @@ La dashboard grafica offre il massimo livello di controllo e analisi visiva:
 streamlit run webpage/app.py
 ```
 
-La dashboard si avvierà nel browser (di default su `http://localhost:8501`) e comprende due sezioni:
+La dashboard si avvierà nel browser (di default su `http://localhost:8501`) e comprende cinque tab (Evaluation, Explore, Catalogue, Setup, API Guide):
 
 #### 1. Tab "🔬 Evaluation"
 - **Configurazione Sidebar:**
@@ -231,6 +231,18 @@ La dashboard si avvierà nel browser (di default su `http://localhost:8501`) e c
 - **Confronto Multi-Run:** seleziona due o più valutazioni per visualizzare **Radar Chart comparativi** e tabelle di variazione percentuale ($\Delta$).
 - Riconoscimento immediato del run con le prestazioni migliori con badge di merito.
 - Cancellazione o ricaricamento di valutazioni archiviate con un click.
+
+#### 3. Tab "📚 Catalogue"
+- Tabella di **tutti i benchmark supportati** con descrizione, stato (scaricato o no), numero di query e dimensione. La barra di ricerca filtra per **nome o descrizione** (non per contenuto).
+- Si spuntano i benchmark da scaricare: **Download selected** scarica i dati grezzi solo dei benchmark scelti e ne genera i file di query; **Build query files** li rigenera dai dati già scaricati.
+
+#### 4. Tab "🛠️ Setup"
+- Connessione a DAVE e indicizzazione del corpus, oppure caricamento del corpus su un RAG generico (`POST /ingest`).
+- Si possono indicizzare **solo i benchmark scaricati** dal tab Catalogue: gli altri non compaiono nelle tabelle di caricamento.
+- Impostazioni di batch (documenti e MB per richiesta, pausa, numero massimo di documenti) e pannello con avanzamento e log del job.
+
+#### 5. Tab "📖 API Guide"
+- Descrive le route `/ask` e `/ingest` che un RAG di terze parti deve esporre.
 
 ---
 
@@ -415,7 +427,7 @@ Se utilizzi **DAVE** come motore RAG documentale:
    ```bash
    python ingest_dave.py
    ```
-   Carica i documenti di tutti i benchmark a batch da 50 su DAVE, tracciando i file già inviati nella cache locale `.dave_docs_cache.json` per evitare re-upload non necessari.
+   Carica su DAVE i corpus dei benchmark, a batch, tracciando i file già inviati nella cache locale `.dave_docs_cache.json` per evitare re-upload non necessari. Poi attende che DAVE li abbia indicizzati e ricarica quelli falliti. Opzioni: `--benchmarks` (default: tutti), `--batch-docs`, `--batch-mb`, `--sleep`, `--max-docs`, `--no-wait` (non attendere l'indicizzazione), `--verify` (confronta cache e DAVE senza caricare nulla), `--recreate` (crea nuove collezioni al posto di quelle esistenti; le vecchie restano su DAVE).
 
 ---
 

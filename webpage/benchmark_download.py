@@ -52,6 +52,14 @@ SOURCES = [
 
 _CHUNK = 1024 * 1024
 
+
+def source_benchmark(label):
+    """Benchmark a source belongs to: "MTRAG corpus clapnq" -> "MTRAG"."""
+    return label.split(" corpus")[0]
+
+
+BENCHMARKS = list(dict.fromkeys(source_benchmark(label) for label, *_ in SOURCES))
+
 # characters not allowed in Windows file names: some LegalBench files contain "|" or ":",
 # and a single invalid name makes Windows Explorer refuse the whole archive
 _INVALID_NAME_CHARS = str.maketrans({c: "_" for c in '<>:"\\|?*'})
@@ -108,8 +116,9 @@ def _add_to_zip(zf, src, dest, kind, only=None):
         raise ValueError(f"Unknown kind: {kind}")
 
 
-def build_benchmarks_zip(output=DEFAULT_OUTPUT, progress=None):
-    """Download every source and write the zip; progress(step, n_steps, label, done, total) is optional.
+def build_benchmarks_zip(output=DEFAULT_OUTPUT, progress=None, benchmarks=None):
+    """Download the sources of `benchmarks` (default: all, see BENCHMARKS) and write the zip;
+    progress(step, n_steps, label, done, total) is optional.
 
     The zip is written to a .part file and renamed only at the end, so a failed
     download never leaves a truncated archive behind.
@@ -117,11 +126,14 @@ def build_benchmarks_zip(output=DEFAULT_OUTPUT, progress=None):
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     partial = output.with_name(output.name + ".part")
-    n_steps = len(SOURCES)
+    sources = [src for src in SOURCES if benchmarks is None or source_benchmark(src[0]) in benchmarks]
+    if not sources:
+        raise ValueError(f"No source for {benchmarks}: valid benchmarks are {BENCHMARKS}")
+    n_steps = len(sources)
     try:
         with tempfile.TemporaryDirectory() as tmp, \
                 zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-            for step, (label, url, dest, kind, *only) in enumerate(SOURCES):
+            for step, (label, url, dest, kind, *only) in enumerate(sources):
                 src = Path(tmp) / f"source_{step}"
 
                 def on_bytes(done, total, step=step, label=label):
@@ -160,6 +172,6 @@ if __name__ == "__main__":
         size = f"{done / _CHUNK:.0f}/{total / _CHUNK:.0f} MB" if total else f"{done / _CHUNK:.0f} MB"
         print(f"\r[{step + 1}/{n_steps}] {label}: {size}".ljust(70), end="", flush=True)
 
-    path = build_benchmarks_zip(progress=_print_progress)
+    path = build_benchmarks_zip(progress=_print_progress, benchmarks=sys.argv[1:] or None)
     print(f"\nSaved {path}, extracting...")
     print(f"Extracted in {extract_benchmarks_zip(path)}")

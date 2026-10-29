@@ -106,6 +106,11 @@ from datasets import Dataset
 
 logger = logging.getLogger("evaluator")
 
+# a RAGAS job (one metric of one query) gets this long; slow judges need minutes for Answer Correctness
+# on long gold answers. Metrics that still come back empty are computed again, only for those queries.
+RAGAS_TIMEOUT = 300
+RAGAS_RETRY_PASSES = 2
+
 
 class RagError(RuntimeError):
     """The RAG under test failed to answer (HTTP error, empty answer, exception):
@@ -529,13 +534,34 @@ def run_evaluation(dataset, rag_base_url, ollama_url, ollama_model, llm_api_key=
     try:
         # RAGAS rows follow the answered queries only (RAG_ERROR queries were never sent)
         ragas_start = time.perf_counter()
-        df_ragas = evaluate(
-            dataset=Dataset.from_dict(ragas_samples),
-            metrics=metric_objects,
-            llm=ragas_llm, embeddings=ragas_embeddings,
-            run_config=RunConfig(max_workers=max_workers, max_retries=retries, timeout=120),
-            raise_exceptions=False
-        ).to_pandas()
+        run_config = RunConfig(max_workers=max_workers, max_retries=retries, timeout=RAGAS_TIMEOUT)
+
+        def _run_ragas(row_ids, metrics):
+            samples = {key: [values[i] for i in row_ids] for key, values in ragas_samples.items()}
+            return evaluate(
+                dataset=Dataset.from_dict(samples), metrics=metrics,
+                llm=ragas_llm, embeddings=ragas_embeddings,
+                run_config=run_config, raise_exceptions=False,
+            ).to_pandas()
+
+        df_ragas = _run_ragas(range(len(answered_reports)), metric_objects)
+
+        # retry the metrics that came back empty (judge timeout or bad output), only for their queries
+        for attempt in range(1, RAGAS_RETRY_PASSES + 1):
+            retry = [(m, [i for i in range(len(df_ragas)) if math.isnan(float(df_ragas.at[i, m.name]))])
+                     for m in metric_objects if m.name in df_ragas.columns]
+            retry = [(m, rows) for m, rows in retry if rows]
+            if not retry:
+                break
+            logger.info("RAGAS retry %d/%d: %s", attempt, RAGAS_RETRY_PASSES,
+                        ", ".join(f"{m.name} x{len(rows)}" for m, rows in retry))
+            if progress_callback:
+                progress_callback("ragas", 0, 1, f"Retrying {sum(len(rows) for _, rows in retry)} empty metrics "
+                                                 f"({attempt}/{RAGAS_RETRY_PASSES})...")
+            for metric, rows in retry:
+                df_retry = _run_ragas(rows, [metric])
+                if metric.name in df_retry.columns:
+                    df_ragas.loc[rows, metric.name] = df_retry[metric.name].to_numpy()
         ragas_seconds = time.perf_counter() - ragas_start
 
         for idx, rep in enumerate(answered_reports):

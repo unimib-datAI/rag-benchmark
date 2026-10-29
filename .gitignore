@@ -221,6 +221,7 @@ __marimo__/
 .dave_collections.json
 .dave_docs_cache.json
 .dave_upload_jobs.json
+.catalogue_counts.json
 config.json
 
 # Raw benchmarks (downloaded with the "Download Benchmark" button)
