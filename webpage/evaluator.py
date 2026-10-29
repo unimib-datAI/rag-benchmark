@@ -561,6 +561,11 @@ def run_evaluation(dataset, rag_base_url, ollama_url, ollama_model, llm_api_key=
 
     callbacks = [TPSCallbackHandler(tps_callback)] if tps_callback else []
     ragas_llm, is_openai = build_judge_llm(ollama_url, ollama_model, llm_api_key, callbacks=callbacks)
+    if is_openai:
+        # RAGAS overwrites llm.temperature with 0.01 before every call, which models that only accept
+        # their default temperature reject; the judge class handles temperature itself
+        from ragas.llms import LangchainLLMWrapper
+        ragas_llm = LangchainLLMWrapper(ragas_llm, bypass_temperature=True)
 
     ragas_embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
 
