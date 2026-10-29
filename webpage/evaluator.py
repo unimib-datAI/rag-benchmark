@@ -172,22 +172,31 @@ def _openai_judge_class():
         from langchain_openai import ChatOpenAI
 
         class JudgeChatOpenAI(ChatOpenAI):
+            # RAGAS also passes temperature (0.01, 0.3) as a per-call kwarg, so the field alone is not enough
+            fixed_temperature: bool = False
+
             def _generate(self, *args, **kwargs):
+                if self.fixed_temperature:
+                    kwargs.pop("temperature", None)
                 try:
                     return super()._generate(*args, **kwargs)
                 except Exception as e:
-                    if self.temperature is None or not _rejects_temperature(e):
+                    if self.fixed_temperature or not _rejects_temperature(e):
                         raise
-                    self.temperature = None
+                    self.fixed_temperature, self.temperature = True, None
+                    kwargs.pop("temperature", None)
                     return super()._generate(*args, **kwargs)
 
             async def _agenerate(self, *args, **kwargs):
+                if self.fixed_temperature:
+                    kwargs.pop("temperature", None)
                 try:
                     return await super()._agenerate(*args, **kwargs)
                 except Exception as e:
-                    if self.temperature is None or not _rejects_temperature(e):
+                    if self.fixed_temperature or not _rejects_temperature(e):
                         raise
-                    self.temperature = None
+                    self.fixed_temperature, self.temperature = True, None
+                    kwargs.pop("temperature", None)
                     return await super()._agenerate(*args, **kwargs)
 
         _JUDGE_OPENAI_CLASS = JudgeChatOpenAI
