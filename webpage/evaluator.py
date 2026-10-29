@@ -172,7 +172,7 @@ def _openai_judge_class():
         from langchain_openai import ChatOpenAI
 
         class JudgeChatOpenAI(ChatOpenAI):
-            # RAGAS also passes temperature (0.01, 0.3) as a per-call kwarg, so the field alone is not enough
+            # concurrent first calls can all hit the 400 before the flag is set, so each one retries once without it
             fixed_temperature: bool = False
 
             def _generate(self, *args, **kwargs):
@@ -181,7 +181,7 @@ def _openai_judge_class():
                 try:
                     return super()._generate(*args, **kwargs)
                 except Exception as e:
-                    if self.fixed_temperature or not _rejects_temperature(e):
+                    if not _rejects_temperature(e):
                         raise
                     self.fixed_temperature, self.temperature = True, None
                     kwargs.pop("temperature", None)
@@ -193,7 +193,7 @@ def _openai_judge_class():
                 try:
                     return await super()._agenerate(*args, **kwargs)
                 except Exception as e:
-                    if self.fixed_temperature or not _rejects_temperature(e):
+                    if not _rejects_temperature(e):
                         raise
                     self.fixed_temperature, self.temperature = True, None
                     kwargs.pop("temperature", None)
