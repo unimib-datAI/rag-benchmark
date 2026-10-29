@@ -96,15 +96,19 @@ html, body, [class*="css"] {
     margin-bottom: 0.5rem;
 }
 
-.sidebar-divider {
-    border: 0;
-    height: 1px;
-    background: linear-gradient(to right, transparent, rgba(255, 255, 255, 0.1), transparent);
-    margin: 1.5rem 0;
+/* ── Metric Cards (Panoramica) ── */
+/* the cards of a row stretch to the same height (the grid wraps to 2 x 2 on narrow windows) */
+.metric-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 1rem;
+    align-items: stretch;
 }
 
-/* ── Metric Cards (Panoramica) ── */
 .metric-card {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;  /* label on top, value at the bottom: values line up even if a label wraps */
     background: rgba(30, 30, 40, 0.6);
     backdrop-filter: blur(8px);
     border: 1px solid rgba(255, 255, 255, 0.05);
@@ -610,7 +614,6 @@ button[kind="primary"]:active {
 
 .vs-seg {
     min-width: 2px;
-    transition: width 0.4s ease;
 }
 
 .vs-correct { background: #00E676; }
@@ -741,4 +744,9 @@ button[kind="primary"]:active {
     color: #94a3b8;
     font-size: 0.74rem;
     font-style: italic;
+}
+
+/* a little room between the overview above and the Timings expander */
+.st-key-timings {
+    margin-top: 1rem;
 }

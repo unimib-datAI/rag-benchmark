@@ -205,9 +205,14 @@ La dashboard grafica offre il massimo livello di controllo e analisi visiva:
 streamlit run webpage/app.py
 ```
 
-La dashboard si avvierà nel browser (di default su `http://localhost:8501`) e comprende cinque tab (Evaluation, Explore, Catalogue, Setup, API Guide):
+La dashboard si avvierà nel browser (di default su `http://localhost:8501`) e comprende cinque tab (Catalogue, Evaluation, Explore, Setup, API Guide); all'apertura si trova sul tab Evaluation:
 
-#### 1. Tab "🔬 Evaluation"
+#### 1. Tab "📚 Catalogue"
+- Tabella di **tutti i benchmark supportati** con descrizione, stato (scaricato o no) e numero di query. La barra di ricerca filtra per **nome o descrizione** (non per contenuto).
+- Si spuntano i benchmark da scaricare: **Download selected** scarica i dati grezzi solo dei benchmark scelti e ne genera automaticamente i file di query.
+- **Clear downloaded files** (expander in fondo al tab) riparte da zero con i file locali dei dataset: elimina i benchmark scaricati (`Benchmarks/`) e i file di query e i corpora preparati (`Run/`). Non tocca gli script `Run/extract_*.py` né ciò che è stato indicizzato. Richiede una conferma e non parte se c'è un download, un'estrazione o un caricamento in corso.
+
+#### 2. Tab "🔬 Evaluation"
 - **Configurazione Sidebar:**
   - Scelta del motore RAG (*Local RAG* o *DAVE*).
   - Impostazione dell'URL base.
@@ -226,20 +231,17 @@ La dashboard si avvierà nel browser (di default su `http://localhost:8501`) e c
   - Dettaglio per singola query espandibile con verdetto, motivazione diagnostica, prompt/risposta RAG, gold answer e contesto recuperato.
   - Diagnostica euristica avanzata complessiva.
 
-#### 2. Tab "📊 Explore"
+#### 3. Tab "📊 Explore"
 - Consulta lo storico di tutte le esecuzioni salvate in `valutazioni/`.
 - **Confronto Multi-Run:** seleziona due o più valutazioni per visualizzare **Radar Chart comparativi** e tabelle di variazione percentuale ($\Delta$).
 - Riconoscimento immediato del run con le prestazioni migliori con badge di merito.
 - Cancellazione o ricaricamento di valutazioni archiviate con un click.
 
-#### 3. Tab "📚 Catalogue"
-- Tabella di **tutti i benchmark supportati** con descrizione, stato (scaricato o no), numero di query e dimensione. La barra di ricerca filtra per **nome o descrizione** (non per contenuto).
-- Si spuntano i benchmark da scaricare: **Download selected** scarica i dati grezzi solo dei benchmark scelti e ne genera i file di query; **Build query files** li rigenera dai dati già scaricati.
-
 #### 4. Tab "🛠️ Setup"
 - Connessione a DAVE e indicizzazione del corpus, oppure caricamento del corpus su un RAG generico (`POST /ingest`).
 - Si possono indicizzare **solo i benchmark scaricati** dal tab Catalogue: gli altri non compaiono nelle tabelle di caricamento.
 - Impostazioni di batch (documenti e MB per richiesta, pausa, numero massimo di documenti) e pannello con avanzamento e log del job.
+- **Clear index** (un expander in ciascuna delle due schede) cancella solo i registri di ciò che è stato indicizzato: quello del RAG generico in una scheda, quello di DAVE (collezioni, file caricati, job) nell'altra. Non tocca i file scaricati e non invia nulla ai sistemi remoti: le collezioni DAVE già create restano lì, inutilizzate, e un nuovo caricamento ne crea di nuove.
 
 #### 5. Tab "📖 API Guide"
 - Descrive le route `/ask` e `/ingest` che un RAG di terze parti deve esporre.
@@ -427,7 +429,7 @@ Se utilizzi **DAVE** come motore RAG documentale:
    ```bash
    python ingest_dave.py
    ```
-   Carica su DAVE i corpus dei benchmark, a batch, tracciando i file già inviati nella cache locale `.dave_docs_cache.json` per evitare re-upload non necessari. Poi attende che DAVE li abbia indicizzati e ricarica quelli falliti. Opzioni: `--benchmarks` (default: tutti), `--batch-docs`, `--batch-mb`, `--sleep`, `--max-docs`, `--no-wait` (non attendere l'indicizzazione), `--verify` (confronta cache e DAVE senza caricare nulla), `--recreate` (crea nuove collezioni al posto di quelle esistenti; le vecchie restano su DAVE).
+   Carica su DAVE i corpus dei benchmark, un batch alla volta: il batch successivo parte solo quando DAVE ha finito di indicizzare il precedente, quindi la barra di avanzamento conta documenti davvero indicizzati e mostra tempo trascorso, tempo stimato e velocità. I file già inviati sono tracciati nella cache locale `.dave_docs_cache.json` per evitare re-upload non necessari; quelli che DAVE non riesce a indicizzare vengono rimandati (fino a 3 passate). Opzioni: `--benchmarks` (default: tutti), `--batch-docs`, `--batch-mb`, `--sleep`, `--max-docs`, `--verify` (confronta cache e DAVE senza caricare nulla), `--recreate` (crea nuove collezioni al posto di quelle esistenti; le vecchie restano su DAVE).
 
 ---
 

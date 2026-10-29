@@ -126,7 +126,7 @@ def main():
     parser = argparse.ArgumentParser(description="Upload the benchmark corpora to a generic RAG (POST /ingest)")
     parser.add_argument("--url", required=True, help="base URL of the RAG")
     parser.add_argument("--benchmarks", nargs="+", choices=UPLOADABLE,
-                        default=[b for b in UPLOADABLE if b not in ingest_dave.DEFAULT_BENCHMARKS_EXCLUDED])
+                        default=UPLOADABLE)
     parser.add_argument("--batch-docs", type=int, default=100, help="documents per request")
     parser.add_argument("--batch-mb", type=float, default=5, help="MB per request")
     parser.add_argument("--sleep", type=float, default=0, help="pause between requests (s)")

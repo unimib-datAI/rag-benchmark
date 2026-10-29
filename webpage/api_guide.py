@@ -99,10 +99,13 @@ def _context_text(item):
     return None
 
 
-def check_endpoint(base_url: str, benchmark: str):
-    """Send one sample question to <base_url>/ask and report what is wrong with the reply."""
+def check_endpoint(base_url: str, benchmark: str = "SQuAD-it"):
+    """Send one probe question to <base_url>/ask and report whether the reply follows the contract.
+
+    The content of the answer is not judged: a RAG with nothing indexed yet can only say it does not know.
+    What matters is that the route answers 200 with a JSON object holding 'answer' and 'contexts'."""
     url = base_url.strip().rstrip("/") + "/ask"
-    payload = {"question": "What is the capital of France?", "search_query": "What is the capital of France?",
+    payload = {"question": "Is this endpoint working?", "search_query": "Is this endpoint working?",
                "benchmark_name": benchmark, "top_k": 10}
     started = time.time()
     try:
@@ -123,19 +126,20 @@ def check_endpoint(base_url: str, benchmark: str):
         return checks + [("info", f"error field: {data.get('error', '(missing)')}")]
 
     answer = data.get("answer")
-    if not isinstance(answer, str) or not answer.strip():
-        checks.append(("error", "'answer' must be a non-empty string."))
+    if not isinstance(answer, str):
+        checks.append(("error", "'answer' must be a string."))
+    elif not answer.strip():
+        checks.append(("warning", "'answer' is empty. Fine for a test, but during an evaluation an empty answer "
+                                  "counts as a RAG error."))
     else:
-        checks.append(("ok", f"answer: {answer[:120]!r}"))
+        checks.append(("ok", f"answer: {answer[:100]!r}" + ("..." if len(answer) > 100 else "")))
 
     contexts = data.get("contexts")
     if not isinstance(contexts, list):
-        checks.append(("error", "'contexts' must be a list (the retrieved documents)."))
+        checks.append(("error", "'contexts' must be a list (the retrieved documents, empty if there are none)."))
     else:
         texts = [_context_text(c) for c in contexts]
-        if not contexts:
-            checks.append(("warning", "'contexts' is empty: Context Precision and Recall will be 0 for every query."))
-        elif None in texts:
+        if None in texts:
             checks.append(("error", "Every item of 'contexts' must be a string, or an object with 'text' "
                                     "(or 'chunks': [{'text': ...}])."))
         else:
@@ -143,6 +147,16 @@ def check_endpoint(base_url: str, benchmark: str):
         if len(contexts) > payload["top_k"]:
             checks.append(("warning", f"{len(contexts)} contexts returned, top_k was {payload['top_k']}."))
     return checks
+
+
+def show_checks(checks):
+    """One box for the whole endpoint test: green, yellow or red by the worst finding, details inside."""
+    levels = [level for level, _ in checks]
+    worst = "error" if "error" in levels else "warning" if "warning" in levels else "ok"
+    title = {"ok": "Endpoint OK", "warning": "Endpoint reachable, with warnings", "error": "Endpoint problem"}[worst]
+    icon = {"ok": "✅", "warning": "⚠️", "error": "❌", "info": "•"}
+    body = "\n".join(f"- {icon[level]} {message[:400]}" for level, message in checks)
+    {"ok": st.success, "warning": st.warning, "error": st.error}[worst](f"**{title}**\n\n{body}")
 
 
 def render(default_url: str = "http://127.0.0.1:8000"):
@@ -260,24 +274,9 @@ def render(default_url: str = "http://127.0.0.1:8000"):
             language="bash")
 
     st.markdown("### 6. Check your endpoint")
-    st.caption("Sends one sample question to `<Base URL>/ask` and checks the reply against the contract above.")
-    k1, k2 = st.columns([3, 1])
-    url = k1.text_input("Base URL", value=default_url, key="guide_check_url")
-    bench = k2.selectbox("benchmark_name", [b[0] for b in BENCHMARKS], index=5, key="guide_check_bench")
+    st.caption("Sends one probe question to `<Base URL>/ask` and checks the shape of the reply against the contract above. "
+               "The answer itself is not judged, so it works even if nothing is indexed yet.")
+    url = st.text_input("Base URL", value=default_url, key="guide_check_url")
     if st.button("Check endpoint", key="guide_check_go", disabled=not url.strip()):
         with st.spinner("Waiting for your RAG..."):
-            results = check_endpoint(url, bench)
-        show = {"ok": st.success, "info": st.info, "warning": st.warning, "error": st.error}
-        for level, message in results:
-            show[level](message)
-        if not any(level == "error" for level, _ in results):
-            st.success("The reply follows the contract.")
-
-    st.markdown("### 7. The DAVE engine")
-    st.markdown(
-        "The DAVE engine does not use these routes. It talks to a DAVE server (tRPC over HTTP): "
-        "`POST <base>/api/auth/keycloak-login`, `collection.create`, `collection.delete`, `collection.getCollectionInfo`, "
-        "`document.createUploadJob`, `document.getUploadJob`, `search.mostSimilarDocuments` "
-        "(`retrievalMethod`: `full` hybrid, `dense`, `full-text`) and `POST <base>/api/generate`. "
-        "Configure it in the **Setup** tab."
-    )
+            show_checks(check_endpoint(url))

@@ -29,6 +29,11 @@ def get_metric_card_html(label: str, val: float, color_class: str) -> str:
         <div class="value {color_class}">{"N/A" if val is None else f"{val:.2f}"}</div>
     </div>"""
 
+def get_metric_grid_html(cards: list) -> str:
+    """Metric cards in one CSS grid: the cards of a row always have the same height, however the window is resized.
+    cards: (label, value, color_class) tuples."""
+    return '<div class="metric-grid">' + "".join(get_metric_card_html(*card) for card in cards) + '</div>'
+
 def get_breakdown_card_html(src_name: str, score: float, count: int, color_class: str) -> str:
     # card for the per-source breakdown
     # the "c-" prefix on the color class avoids conflicts with the classes above
@@ -130,12 +135,6 @@ def get_verdict_summary_html(reports: list) -> str:
     pattern_counts = Counter(r.get('error_pattern', 'UNKNOWN') for r in reports if r.get('verdict', 'wrong') == 'wrong')
     partial_causes = Counter(r.get('error_cause') or 'UNKNOWN' for r in reports if r.get('verdict') == 'partial')
 
-    # Percentages for the stacked bar
-    pct_c = (correct / total * 100) if total else 0
-    pct_p = (partial / total * 100) if total else 0
-    pct_w = (wrong / total * 100) if total else 0
-    pct_n = (not_eval / total * 100) if total else 0
-
     # Build error-pattern breakdown (wrong answers) and causes of partial answers
     error_patterns_html = "".join(f'<span class="vp-tag vp-tag-red">{escape(p)}: {c}</span>' for p, c in pattern_counts.most_common())
     partial_causes_html = "".join(f'<span class="vp-tag vp-tag-yellow">{escape(p)}: {c}</span>' for p, c in partial_causes.most_common())
@@ -145,27 +144,29 @@ def get_verdict_summary_html(reports: list) -> str:
     elif not error_patterns_html:
         error_patterns_html = '<span class="vp-tag vp-tag-red">Unclassified: {}</span>'.format(wrong)
 
-    return f"""
-    <div class="verdict-summary">
-        <div class="vs-header">⚖️ Verdict Distribution</div>
-        <div class="vs-bar">
-            <div class="vs-seg vs-correct" style="width:{pct_c}%;" title="Correct: {correct}"></div>
-            <div class="vs-seg vs-partial" style="width:{pct_p}%;" title="Partial: {partial}"></div>
-            <div class="vs-seg vs-wrong"   style="width:{pct_w}%;" title="Wrong: {wrong}"></div>
-            {f'<div class="vs-seg vs-noteval" style="width:{pct_n}%;" title="Not Evaluated: {not_eval_text}"></div>' if not_eval else ''}
-        </div>
-        <div class="vs-labels">
-            <span class="vs-label"><span class="vs-dot" style="background:#00E676;"></span>Correct: {correct}</span>
-            <span class="vs-label"><span class="vs-dot" style="background:#FFC400;"></span>Partial: {partial}</span>
-            <span class="vs-label"><span class="vs-dot" style="background:#FF1744;"></span>Wrong: {wrong}</span>
-            {f'<span class="vs-label"><span class="vs-dot" style="background:#94A3B8;"></span>Not Evaluated: {not_eval_text}</span>' if not_eval else ''}
-        </div>
-        <div class="vs-patterns">
-            <span class="vs-patterns-title">Error Patterns:</span>
-            {error_patterns_html}
-        </div>
-        {f'<div class="vs-patterns"><span class="vs-patterns-title">Partial Causes:</span>{partial_causes_html}</div>' if partial_causes_html else ''}
-    </div>"""
+    # No blank lines or indentation anywhere: in Markdown a blank line ends an HTML block and the next
+    # indented line becomes a code block, which cut the bar in two whenever an optional part was missing.
+    # A segment's size is its count (flex-grow), so no percentage has to resolve against the bar width;
+    # segments with no queries are left out, otherwise each would still show a 2px sliver of colour.
+    segments = [("correct", correct, f"Correct: {correct}"), ("partial", partial, f"Partial: {partial}"),
+                ("wrong", wrong, f"Wrong: {wrong}"), ("noteval", not_eval, f"Not Evaluated: {not_eval_text}")]
+    bar_html = "".join(f'<div class="vs-seg vs-{kind}" style="flex:{count} 1 0;" title="{escape(title)}"></div>'
+                       for kind, count, title in segments if count)
+    labels = [("#00E676", f"Correct: {correct}"), ("#FFC400", f"Partial: {partial}"), ("#FF1744", f"Wrong: {wrong}")]
+    if not_eval:
+        labels.append(("#94A3B8", f"Not Evaluated: {not_eval_text}"))
+    labels_html = "".join(f'<span class="vs-label"><span class="vs-dot" style="background:{color};"></span>{escape(text)}</span>'
+                          for color, text in labels)
+    partial_html = (f'<div class="vs-patterns"><span class="vs-patterns-title">Partial Causes:</span>{partial_causes_html}</div>'
+                    if partial_causes_html else "")
+    return ('<div class="verdict-summary">'
+            '<div class="vs-header">⚖️ Verdict Distribution</div>'
+            f'<div class="vs-bar">{bar_html}</div>'
+            f'<div class="vs-labels">{labels_html}</div>'
+            '<div class="vs-patterns"><span class="vs-patterns-title">Error Patterns:</span>'
+            f'{error_patterns_html}</div>'
+            f'{partial_html}'
+            '</div>')
 
 
 def get_pattern_legend_html() -> str:

@@ -92,26 +92,26 @@ def force_engine(engine, key="engine_select"):
 # Catalogue placeholders: (name, description, count). They only look downloaded, nothing is fetched.
 # A placeholder whose name starts with the name of a real benchmark (BENCHMARK_SHORT) is skipped.
 PLACEHOLDER_BENCHMARKS = [
-    ("RGB (Noise & Rejection)", "Notizie recenti in inglese e cinese, con documenti recuperati da motori di ricerca. Quattro testbed: noise robustness, negative rejection, information integration e counterfactual robustness.", ""),
-    ("RECALL (Counterfactual Knowledge)", "Costruito da EventKG (conoscenza di senso comune) e da un dataset di conoscenza scientifica, inserendo informazioni controfattuali con ChatGPT. Due task: QA e generazione di testo.", ""),
-    ("RAGTruth (Hallucination Corpus)", "Risposte generate da vari LLM con RAG, annotate a mano a livello di risposta e di parola, su QA, data-to-text e summarization. Serve a studiare dove nascono le allucinazioni.", "~18,000 risposte"),
-    ("ReEval (Adversarial Test Generation)", "Non è un dataset fisso ma un framework che perturba l’evidenza di dataset QA open-domain esistenti, con prompt chaining su ChatGPT, per generare nuovi casi che inducono allucinazioni.", ""),
-    ("MultiHop-RAG (Multi-Document Reasoning)", "Articoli di news in inglese (609). Ogni query richiede 2-4 evidenze (inference, comparison, temporal, null).", "2,556"),
-    ("MEBench (Multi-Entity Reasoning)", "Domande cross-documento su molte entità (media 409 per query): ragionamento comparativo, statistico e relazionale, in 8 tipi di task.", "4,780"),
-    ("FollowRAG / VIF-RAG (Instruction Constraints)", "Verifica se il sistema rispetta vincoli di istruzione (22 categorie, es. formato e lunghezza) su 4 dataset QA knowledge-intensive. Il dataset di training associato (VIF-RAG-QA) supera i 100k campioni.", "~3,000 (test)"),
-    ("LegalBench-RAG (Contract Precision)", "Contratti e documenti legali reali (714 documenti da CUAD, MAUD, ContractNLI, PrivacyQA). Verifica l’estrazione di clausole precise.", "6,858"),
-    ("MIRAGE / MedRAG (Medical QA)", "Domande mediche a scelta multipla da 5 dataset (MMLU-Med, MedQA-US, MedMCQA, PubMedQA*, BioASQ-Y/N). MedRAG è il toolkit associato con corpora e retriever.", "7,663"),
-    ("CRAG (Dynamic Facts & Noise)", "Q&A fattuale su 5 domini e 8 tipi di domanda, con pagine HTML rumorose e API mock. Verifica fatti che cambiano nel tempo, premesse false e negative rejection.", "4,409"),
-    ("OmniEval (Financial Matrix)", "Dominio finanziario in cinese, organizzato in una matrice di 5 classi di task × 16 topic. Ha una parte generata con GPT-4 (11.4k esempi) e una annotata a mano (1.7k). Il corpus di retrieval è di circa 362k documenti, ma questo dato viene da una sola fonte secondaria.", "~13,100 (11.4k + 1.7k)"),
-    ("FeB4RAG (Federated Search)", "Richieste di informazione in stile chatbot su 16 sotto-collezioni di BEIR, con i risultati di ogni risorsa e giudizi di rilevanza prodotti da un LLM.", "790"),
-    ("DomainRAG (University Enrollment)", "Sistema di iscrizioni di un’università cinese (1,686 pagine web, 14,406 passaggi). Sei capacità: QA conversazionale, strutturale, estrattiva, time-sensitive, multi-documento e faithful.", "395"),
-    ("CRUD-RAG (Create/Read/Update/Delete)", "Notizie cinesi recenti (oltre 80,000 articoli) con task di continuazione testo, QA a uno o più documenti, correzione di allucinazioni e summarization multi-documento.", ""),
-    ("CDQA (Chinese Dynamic QA)", "Domande con risposte che cambiano nel tempo, ricavate da news cinesi. Le categorie sono fast-changing, slow-changing e never-changing.", "1,339"),
-    ("FreshLLMs / FreshQA (Fresh Knowledge)", "Domande in 4 categorie (never-, slow-, fast-changing e false-premise). Verifica la conoscenza aggiornata e la capacità di smontare premesse sbagliate.", "600"),
-    ("RAGBench (Industry Aggregate)", "Aggregato di 12 dataset esistenti in 5 domini (biomedico, generale, legale, customer support, finanza), con metriche TRACe (utilization, relevance, adherence, completeness).", "100,000"),
-    ("OHRBench (OCR Noise)", "Pagine PDF (8,561) da 7 domini. Verifica l’impatto del rumore OCR su testo, tabelle, formule, grafici e ordine di lettura.", "8,498"),
-    ("MTRAG (Multi-Turn Conversations)", "110 conversazioni multi-turno scritte da umani (media 7.7 turni) su 4 corpora (ClapNQ, FiQA, Govt, Cloud). Verifica co-referenze e domande non standalone o senza risposta.", "842"),
-    ("U-NIAH (Needle-in-a-Haystack)", "Framework che confronta LLM e RAG su contesti lunghi, con un corpus sintetico ambientato in un universo fittizio. Ha configurazioni multi-needle, long-needle e nested-needle.", ""),
+    ("RGB (Noise & Rejection)", "Recent news in English and Chinese, with documents retrieved from search engines. Four testbeds: noise robustness, negative rejection, information integration and counterfactual robustness.", ""),
+    ("RECALL (Counterfactual Knowledge)", "Built from EventKG (common-sense knowledge) and a scientific knowledge dataset, with counterfactual information inserted using ChatGPT. Two tasks: QA and text generation.", ""),
+    ("RAGTruth (Hallucination Corpus)", "Responses generated by various LLMs with RAG, hand-annotated at response and word level, on QA, data-to-text and summarization. Used to study where hallucinations come from.", "~18,000 responses"),
+    ("ReEval (Adversarial Test Generation)", "Not a fixed dataset but a framework that perturbs the evidence of existing open-domain QA datasets, using prompt chaining on ChatGPT, to generate new cases that induce hallucinations.", ""),
+    ("MultiHop-RAG (Multi-Document Reasoning)", "English news articles (609). Each query requires 2-4 pieces of evidence (inference, comparison, temporal, null).", "2,556"),
+    ("MEBench (Multi-Entity Reasoning)", "Cross-document questions over many entities (409 on average per query): comparative, statistical and relational reasoning, in 8 task types.", "4,780"),
+    ("FollowRAG / VIF-RAG (Instruction Constraints)", "Checks whether the system respects instruction constraints (22 categories, e.g. format and length) on 4 knowledge-intensive QA datasets. The associated training dataset (VIF-RAG-QA) exceeds 100k samples.", "~3,000 (test)"),
+    ("LegalBench-RAG (Contract Precision)", "Real contracts and legal documents (714 documents from CUAD, MAUD, ContractNLI, PrivacyQA). Tests the extraction of precise clauses.", "6,858"),
+    ("MIRAGE / MedRAG (Medical QA)", "Multiple-choice medical questions from 5 datasets (MMLU-Med, MedQA-US, MedMCQA, PubMedQA*, BioASQ-Y/N). MedRAG is the associated toolkit with corpora and retrievers.", "7,663"),
+    ("CRAG (Dynamic Facts & Noise)", "Factual Q&A across 5 domains and 8 question types, with noisy HTML pages and mock APIs. Tests facts that change over time, false premises and negative rejection.", "4,409"),
+    ("OmniEval (Financial Matrix)", "Financial domain in Chinese, organized in a matrix of 5 task classes × 16 topics. It has a GPT-4-generated part (11.4k examples) and a hand-annotated one (1.7k). The retrieval corpus is about 362k documents, but this figure comes from a single secondary source.", "~13,100 (11.4k + 1.7k)"),
+    ("FeB4RAG (Federated Search)", "Chatbot-style information requests over 16 BEIR sub-collections, with the results of each resource and relevance judgments produced by an LLM.", "790"),
+    ("DomainRAG (University Enrollment)", "Enrollment system of a Chinese university (1,686 web pages, 14,406 passages). Six abilities: conversational, structural, extractive, time-sensitive, multi-document and faithful QA.", "395"),
+    ("CRUD-RAG (Create/Read/Update/Delete)", "Recent Chinese news (over 80,000 articles) with tasks of text continuation, single- and multi-document QA, hallucination correction and multi-document summarization.", ""),
+    ("CDQA (Chinese Dynamic QA)", "Questions whose answers change over time, drawn from Chinese news. The categories are fast-changing, slow-changing and never-changing.", "1,339"),
+    ("FreshLLMs / FreshQA (Fresh Knowledge)", "Questions in 4 categories (never-, slow-, fast-changing and false-premise). Tests up-to-date knowledge and the ability to debunk wrong premises.", "600"),
+    ("RAGBench (Industry Aggregate)", "Aggregate of 12 existing datasets across 5 domains (biomedical, general, legal, customer support, finance), with TRACe metrics (utilization, relevance, adherence, completeness).", "100,000"),
+    ("OHRBench (OCR Noise)", "PDF pages (8,561) from 7 domains. Tests the impact of OCR noise on text, tables, formulas, charts and reading order.", "8,498"),
+    ("MTRAG (Multi-Turn Conversations)", "110 human-written multi-turn conversations (7.7 turns on average) over 4 corpora (ClapNQ, FiQA, Govt, Cloud). Tests coreference and non-standalone or unanswerable questions.", "842"),
+    ("U-NIAH (Needle-in-a-Haystack)", "Framework that compares LLMs and RAG on long contexts, with a synthetic corpus set in a fictional universe. It has multi-needle, long-needle and nested-needle configurations.", ""),
 ]
 
 
@@ -130,3 +130,86 @@ def mark_downloaded(names):
 
 def is_marked_downloaded(name):
     return name in st.session_state.get("dev_fake_downloaded", ())
+
+
+# ── fake indexing of the placeholders ──────────────────────────────
+
+def _fake_queries(name):
+    """Query count written in the placeholder list ("2,556", "~13,100 (11.4k + 1.7k)"), else a stable made-up one."""
+    count = next((c for n, _, c in PLACEHOLDER_BENCHMARKS if n == name), "")
+    digits = "".join(ch for ch in count.split("(")[0] if ch.isdigit())
+    return int(digits) if digits else 300 + sum(map(ord, name)) % 2000
+
+
+def _fake_docs(name):
+    return max(1, _fake_queries(name) // 4)
+
+
+def fake_upload_stats(name):
+    """(documents uploaded, "answerable / total" text) of a placeholder, or (0, "-") if not "indexed" yet."""
+    if name not in st.session_state.get("dev_fake_uploaded", ()):
+        return 0, "-"
+    queries = _fake_queries(name)
+    return _fake_docs(name), f"{queries} / {queries}"
+
+
+def simulate_upload(names):
+    """Pretend to index the placeholders: a progress bar and a log, then they count as uploaded. Nothing is sent."""
+    import time
+    bar = st.progress(0.0, text="Starting upload...")
+    log = st.empty()
+    lines = []
+    steps = 6
+    for name in names:
+        for step in range(1, steps + 1):
+            time.sleep(0.35)
+            bar.progress(step / steps, text=f"[{name}] uploading batch {step}/{steps}")
+        lines.append(f"[{name}] done: {_fake_docs(name)} documents uploaded and indexed, 0 failed requests.")
+        log.code("\n".join(lines), language=None)
+        st.session_state.setdefault("dev_fake_uploaded", set()).add(name)
+    bar.empty()
+    st.session_state.dev_upload_msg = "Corpus upload completed: " + ", ".join(names)
+
+
+
+def fake_corpus_path(name):
+    """A believable but made-up corpus path for a placeholder, stable for the same name."""
+    import re
+    slug = re.sub(r"[^a-z0-9]+", "-", name.split(" (")[0].lower()).strip("-")
+    variants = [f"Benchmarks/{slug}/data/corpus", f"Benchmarks/{slug}/dataset/corpus.json",
+                f"Benchmarks/{slug}/corpus/documents.jsonl", f"Run/{slug}_corpus.json"]
+    return variants[sum(map(ord, name)) % len(variants)]
+
+
+def fake_check_endpoint(base_url):
+    """What api_guide.check_endpoint reports for a healthy RAG, without contacting anything."""
+    import random
+    import time
+    time.sleep(0.8)
+    url = base_url.strip().rstrip("/") + "/ask"
+    return [("info", f"POST {url} answered HTTP 200 in {random.uniform(0.9, 2.4):.1f}s"),
+            ("ok", "answer: 'Yes, the endpoint is working.'"),
+            ("ok", "contexts: 6 documents")]
+
+
+# Catalogue tags of the placeholders: name -> (domain, tasks). ReEval has none.
+PLACEHOLDER_TAGS = {
+    "RGB (Noise & Rejection)": ("News", ["Noise Robustness", "Negative Rejection", "Counterfactual Robustness"]),
+    "RECALL (Counterfactual Knowledge)": ("Open-domain", ["Counterfactual Robustness"]),
+    "RAGTruth (Hallucination Corpus)": ("Multi-domain", ["Hallucination Detection"]),
+    "MEBench (Multi-Entity Reasoning)": ("Open-domain", ["Multi-hop QA", "Numerical Reasoning"]),
+    "FollowRAG / VIF-RAG (Instruction Constraints)": ("Open-domain", ["Instruction Following"]),
+    "MIRAGE / MedRAG (Medical QA)": ("Medical", ["Multiple-choice QA"]),
+    "OmniEval (Financial Matrix)": ("Finance", ["Multi-hop QA", "Multi-turn QA", "Long-form QA"]),
+    "FeB4RAG (Federated Search)": ("Multi-domain", ["Federated Search", "Retrieval Evaluation"]),
+    "DomainRAG (University Enrollment)": ("Education", ["Multi-turn QA", "Time-sensitive QA", "Noise Robustness"]),
+    "CRUD-RAG (Create/Read/Update/Delete)": ("News", ["Text Generation", "Multi-hop QA", "Summarization"]),
+    "CDQA (Chinese Dynamic QA)": ("News", ["Time-sensitive QA"]),
+    "FreshLLMs / FreshQA (Fresh Knowledge)": ("Open-domain", ["Time-sensitive QA", "False Premise Detection"]),
+    "RAGBench (Industry Aggregate)": ("Multi-domain", ["Hallucination Detection"]),
+    "U-NIAH (Needle-in-a-Haystack)": ("Synthetic", ["Long-context Retrieval"]),
+}
+
+
+def placeholder_tags(name):
+    return PLACEHOLDER_TAGS.get(name, ("", []))

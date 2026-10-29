@@ -155,6 +155,45 @@ def parse_llm_endpoint_or_key(endpoint_or_key: str, default_base_url: str = "htt
     auth_header = val if val.lower().startswith("bearer ") else f"Bearer {val}"
     return default_base_url, {"headers": {"Authorization": auth_header}}
 
+_JUDGE_OPENAI_CLASS = None
+
+
+def _rejects_temperature(error):
+    """True for the 400 of models that only accept their default temperature (OpenAI o-series, gpt-5...)."""
+    text = str(error).lower()
+    return "temperature" in text and "unsupported" in text
+
+
+def _openai_judge_class():
+    """ChatOpenAI that asks for temperature 0 (comparable runs) but, if the model refuses any other
+    temperature than its default, repeats the call without it and keeps doing so."""
+    global _JUDGE_OPENAI_CLASS
+    if _JUDGE_OPENAI_CLASS is None:
+        from langchain_openai import ChatOpenAI
+
+        class JudgeChatOpenAI(ChatOpenAI):
+            def _generate(self, *args, **kwargs):
+                try:
+                    return super()._generate(*args, **kwargs)
+                except Exception as e:
+                    if self.temperature is None or not _rejects_temperature(e):
+                        raise
+                    self.temperature = None
+                    return super()._generate(*args, **kwargs)
+
+            async def _agenerate(self, *args, **kwargs):
+                try:
+                    return await super()._agenerate(*args, **kwargs)
+                except Exception as e:
+                    if self.temperature is None or not _rejects_temperature(e):
+                        raise
+                    self.temperature = None
+                    return await super()._agenerate(*args, **kwargs)
+
+        _JUDGE_OPENAI_CLASS = JudgeChatOpenAI
+    return _JUDGE_OPENAI_CLASS
+
+
 def build_judge_llm(endpoint: str, model: str, api_key: str = "", callbacks=None, timeout=None):
     """LangChain chat model for the judge, shared by RAGAS and the dashboard's expert report.
     OpenAI-compatible (ChatOpenAI) with an API key or a /v1, openai or azure URL,
@@ -162,9 +201,8 @@ def build_judge_llm(endpoint: str, model: str, api_key: str = "", callbacks=None
     base_url, client_kwargs = parse_llm_endpoint_or_key(endpoint, api_key=api_key)
     is_openai = bool(api_key) or "openai" in base_url.lower() or "azure" in base_url.lower()         or "/v1" in urlparse(base_url).path
     if is_openai:
-        from langchain_openai import ChatOpenAI
         # always the configured URL: None would send a local server's calls to api.openai.com
-        return ChatOpenAI(
+        return _openai_judge_class()(
             model=model,
             base_url=base_url or None,
             api_key=api_key or "sk-no-key",
