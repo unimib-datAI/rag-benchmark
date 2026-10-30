@@ -434,8 +434,8 @@ if not st.session_state.running and not st.session_state.results:
 
 # main tabs
 # the Catalogue comes first, but the page opens on the Evaluation tab
-tab_catalogue, tab_evaluation, tab_explore, tab_setup, tab_guide = st.tabs(
-    ["📚 Catalogue", "🔬 Evaluation", "📊 Explore", "🛠️ Setup", "📖 API Guide"], default="🔬 Evaluation")
+tab_catalogue, tab_setup, tab_evaluation, tab_explore, tab_guide = st.tabs(
+    ["📚 Catalogue", "🛠️ Setup", "🔬 Evaluation", "📊 Explore", "📖 API Guide"], default="🔬 Evaluation")
 
 with tab_evaluation:
     if not st.session_state.running and st.session_state.get("eval_error"):
@@ -651,16 +651,14 @@ with tab_evaluation:
                 m, s = divmod(round(sec), 60)
                 h, m = divmod(m, 60)
                 return f"{h}h {m:02d}m {s:02d}s" if h else f"{m}m {s:02d}s" if m else f"{sec:.1f}s"
-            ingest, queries = timings.get("ingestion", {}), timings.get("query", {})
+            queries = timings.get("query", {})
             with st.container(key="timings"):  # keyed only to give it a top margin (style.css)
                 with st.expander(f"⏱️ Timings — total {_fmt(timings.get('totale', 0))}"):
-                    st.markdown(f"**Ingestion** {_fmt(sum(ingest.values()))} · **RAG queries** {_fmt(sum(queries.values()))}"
-                                f" · **RAGAS** {_fmt(timings.get('ragas', 0))}")
                     rows = []
-                    for src in sorted(set(ingest) | set(queries)):
+                    for src in sorted(queries):
                         n_q = sum(1 for r in reports if r.get("source") == src)
                         q = queries.get(src, 0)
-                        rows.append({"Benchmark": _short_source(src), "Ingestion": _fmt(ingest.get(src, 0)),
+                        rows.append({"Benchmark": _short_source(src),
                                      "RAG queries": _fmt(q), "Per query": f"{q / n_q if n_q else 0:.1f}s"})
                     st.table(rows)
 
@@ -1337,7 +1335,9 @@ Give 3-4 concrete, actionable technical recommendations to improve the weaker sy
 
 Write in English, be specific with numbers, do not use emojis, keep it under 500 words total."""
 
-                            st.session_state[compare_report_key] = invoke_ollama(PROMPT_COMPARE, ollama_url, ollama_model)
+                            compare_report = invoke_ollama(PROMPT_COMPARE, ollama_url, ollama_model, llm_api_key)
+                        if compare_report:  # on failure invoke_ollama shows the error, a rerun would wipe it
+                            st.session_state[compare_report_key] = compare_report
                             st.rerun()
                 else:
                     st.markdown(_style_report(st.session_state[compare_report_key]))
@@ -1481,18 +1481,22 @@ with tab_catalogue:
             st.info("No benchmark matches the search.")
 
         # the raw benchmarks are not in the repository: download the selected ones from the official sources
-        def _mark_placeholders():  # DEV MODE: runs before the table is drawn, so the status updates at once
-            devmode.mark_downloaded([
-                name for i, (name, _, _) in enumerate(devmode.catalogue_placeholders(BENCHMARK_SHORT))
-                if st.session_state.get(f"w_catalogue_sel_placeholder_{i}")])
+        def _mark_placeholders():  # DEV MODE: fake download, a short delay and then they look downloaded
+            names = [name for i, (name, _, _) in enumerate(devmode.catalogue_placeholders(BENCHMARK_SHORT))
+                     if st.session_state.get(f"w_catalogue_sel_placeholder_{i}")]
+            if names:
+                with st.spinner("Downloading " + ", ".join(names) + "..."):
+                    time.sleep(random.uniform(2.5, 4.5))
+                devmode.mark_downloaded(names)
 
         d1, _ = st.columns([1, 4])
-        if d1.button("Download selected", type="primary", on_click=_mark_placeholders, disabled=st.session_state.running or not selected,
+        if d1.button("Download selected", type="primary", disabled=st.session_state.running or not selected,
                      key="w_catalogue_download",
                      help="Downloads the raw files of the selected benchmarks, extracts them into Benchmarks/ and "
                           "builds their query files in Run/ automatically. Tick the benchmarks in the table first."):
             real = [n for n in selected if n in BENCHMARK_MAPPING]
-            if not real:  # only DEV MODE placeholders: already marked by the click callback, nothing to fetch
+            _mark_placeholders()
+            if not real:  # only DEV MODE placeholders: nothing to fetch
                 st.session_state.download_msg = "Downloaded: " + ", ".join(selected)
                 st.rerun()  # the whole page, not just this fragment: the Setup tab lists them too
             if real:
@@ -1787,7 +1791,7 @@ with tab_setup:
         st.divider()
 
         # 2. corpus upload
-        st.subheader("Corpus Upload")
+        st.subheader("Index corpus" if devmode.active() else "Corpus Upload")
         rag_uploaded = ingest_http.uploaded_names(rag_url)
         if devmode.active():  # DEV MODE: the documents really are in DAVE
             rag_uploaded = ingest_dave.load_doc_cache()
