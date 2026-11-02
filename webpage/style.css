@@ -282,17 +282,6 @@ html, body, [class*="css"] {
     padding: 1rem;
 }
 
-/* ── Footer ── */
-.footer-bar {
-    margin-top: 4rem;
-    padding: 1.5rem;
-    text-align: center;
-    font-size: 0.85rem;
-    color: #5a5a75;
-    border-top: 1px solid rgba(255, 255, 255, 0.05);
-    font-family: 'JetBrains Mono', monospace;
-}
-
 /* ==========================================================================
    OVERRIDE WIDGET NATIVI STREAMLIT (Sidebar e Bottoni)
    ========================================================================== */
@@ -452,17 +441,6 @@ button[kind="primary"]:active {
     color: #cfcfd6;
 }
 
-/* ── Compare Chart Wrapper ── */
-.compare-chart {
-    background: rgba(20, 20, 30, 0.5);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: 14px;
-    padding: 1.2rem;
-    margin-bottom: 1rem;
-}
-
 /* ── Badge "Migliore" ── */
 .eval-best-badge {
     display: inline-block;
@@ -618,6 +596,7 @@ button[kind="primary"]:active {
 
 .vs-correct { background: #00E676; }
 .vs-partial { background: #FFC400; }
+.vs-refusal { background: #C084FC; }
 .vs-wrong   { background: #FF1744; }
 .vs-noteval { background: #94A3B8; }
 
@@ -678,6 +657,12 @@ button[kind="primary"]:active {
     background: rgba(255, 196, 0, 0.1);
     border: 1px solid rgba(255, 196, 0, 0.3);
     color: #FFC400;
+}
+
+.vp-tag-purple {
+    background: rgba(192, 132, 252, 0.1);
+    border: 1px solid rgba(192, 132, 252, 0.3);
+    color: #C084FC;
 }
 
 .vp-tag-green {

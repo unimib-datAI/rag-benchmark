@@ -62,19 +62,12 @@ def get_diagnostics_html(reports: list):
 
     return html_issues
 
-def get_footer_html(num_reports: int, ollama_model: str, time_str: str, eval_name: str = "") -> str:
-    name_prefix = f"{escape(eval_name)}  &middot;  " if eval_name else ""
-    return f"""
-<div class="footer-bar">
-    {name_prefix}SuperBenchmark  &middot;  {num_reports} queries  &middot;  Judge: {escape(ollama_model)}  &middot;  {escape(time_str)}
-</div>"""
-
-
 def get_verdict_html(verdict: str, verdict_label: str, pattern_label: str, reason: str) -> str:
     """Card showing the per-query verdict and error-pattern explanation."""
     color_map = {
         'correct': ('#00E676', 'rgba(0, 230, 118, 0.06)', 'rgba(0, 230, 118, 0.20)'),
         'partial': ('#FFC400', 'rgba(255, 196, 0, 0.06)',  'rgba(255, 196, 0, 0.20)'),
+        'refusal': ('#C084FC', 'rgba(192, 132, 252, 0.06)',  'rgba(192, 132, 252, 0.20)'),
         'wrong':   ('#FF1744', 'rgba(255, 23, 68, 0.06)',  'rgba(255, 23, 68, 0.20)'),
         'not_evaluated': ('#94A3B8', 'rgba(148, 163, 184, 0.06)', 'rgba(148, 163, 184, 0.20)'),
     }
@@ -124,48 +117,46 @@ PATTERN_LEGEND = [
 
 
 def get_verdict_summary_html(reports: list) -> str:
-    """Summary bar showing distribution of verdicts, error patterns and causes of partial answers."""
+    """Summary bar showing the distribution of verdicts and, for each kind of failure, its causes."""
     total = len(reports)
     verdicts = Counter(r.get('verdict', 'wrong') for r in reports)
-    correct, partial, not_eval = verdicts['correct'], verdicts['partial'], verdicts['not_evaluated']
-    wrong = total - correct - partial - not_eval
-    # not evaluated because the RAG itself failed (RAG_ERROR), not the judge
-    rag_err = sum(1 for r in reports if r.get('error_pattern') == 'RAG_ERROR')
-    not_eval_text = f"{not_eval} (RAG errors: {rag_err})" if rag_err else f"{not_eval}"
-    pattern_counts = Counter(r.get('error_pattern', 'UNKNOWN') for r in reports if r.get('verdict', 'wrong') == 'wrong')
-    partial_causes = Counter(r.get('error_cause') or 'UNKNOWN' for r in reports if r.get('verdict') == 'partial')
+    correct, partial, refusal, not_eval = (verdicts['correct'], verdicts['partial'], verdicts['refusal'],
+                                           verdicts['not_evaluated'])
+    wrong = total - correct - partial - refusal - not_eval
 
-    # Build error-pattern breakdown (wrong answers) and causes of partial answers
-    error_patterns_html = "".join(f'<span class="vp-tag vp-tag-red">{escape(p)}: {c}</span>' for p, c in pattern_counts.most_common())
-    partial_causes_html = "".join(f'<span class="vp-tag vp-tag-yellow">{escape(p)}: {c}</span>' for p, c in partial_causes.most_common())
+    def causes_row(title, verdict, tag_color):
+        # for wrong and not evaluated queries the cause is their pattern, for partial and refused answers it is stored apart
+        causes = Counter(r.get('error_cause') or r.get('error_pattern', 'UNKNOWN')
+                         for r in reports if r.get('verdict', 'wrong') == verdict)
+        tags = "".join(f'<span class="vp-tag vp-tag-{tag_color}">{escape(p)}: {c}</span>' for p, c in causes.most_common())
+        return f'<div class="vs-patterns"><span class="vs-patterns-title">{title}:</span>{tags}</div>' if tags else ""
 
-    if not error_patterns_html and wrong == 0:
-        error_patterns_html = '<span class="vp-tag vp-tag-green">No errors detected</span>'
-    elif not error_patterns_html:
-        error_patterns_html = '<span class="vp-tag vp-tag-red">Unclassified: {}</span>'.format(wrong)
+    causes_html = (causes_row("Partial — causes", "partial", "yellow") + causes_row("Refusal — causes", "refusal", "purple")
+                   + causes_row("Wrong — causes", "wrong", "red"))
+    if not causes_html:
+        causes_html = '<div class="vs-patterns"><span class="vp-tag vp-tag-green">No errors detected</span></div>'
+    causes_html += causes_row("Not Evaluated — causes", "not_evaluated", "grey")
 
     # No blank lines or indentation anywhere: in Markdown a blank line ends an HTML block and the next
     # indented line becomes a code block, which cut the bar in two whenever an optional part was missing.
     # A segment's size is its count (flex-grow), so no percentage has to resolve against the bar width;
     # segments with no queries are left out, otherwise each would still show a 2px sliver of colour.
     segments = [("correct", correct, f"Correct: {correct}"), ("partial", partial, f"Partial: {partial}"),
-                ("wrong", wrong, f"Wrong: {wrong}"), ("noteval", not_eval, f"Not Evaluated: {not_eval_text}")]
+                ("refusal", refusal, f"Refusal: {refusal}"), ("wrong", wrong, f"Wrong: {wrong}"),
+                ("noteval", not_eval, f"Not Evaluated: {not_eval}")]
     bar_html = "".join(f'<div class="vs-seg vs-{kind}" style="flex:{count} 1 0;" title="{escape(title)}"></div>'
                        for kind, count, title in segments if count)
-    labels = [("#00E676", f"Correct: {correct}"), ("#FFC400", f"Partial: {partial}"), ("#FF1744", f"Wrong: {wrong}")]
+    labels = [("#00E676", f"Correct: {correct}"), ("#FFC400", f"Partial: {partial}"),
+              ("#C084FC", f"Refusal: {refusal}"), ("#FF1744", f"Wrong: {wrong}")]
     if not_eval:
-        labels.append(("#94A3B8", f"Not Evaluated: {not_eval_text}"))
+        labels.append(("#94A3B8", f"Not Evaluated: {not_eval}"))
     labels_html = "".join(f'<span class="vs-label"><span class="vs-dot" style="background:{color};"></span>{escape(text)}</span>'
                           for color, text in labels)
-    partial_html = (f'<div class="vs-patterns"><span class="vs-patterns-title">Partial Causes:</span>{partial_causes_html}</div>'
-                    if partial_causes_html else "")
     return ('<div class="verdict-summary">'
             '<div class="vs-header">⚖️ Verdict Distribution</div>'
             f'<div class="vs-bar">{bar_html}</div>'
             f'<div class="vs-labels">{labels_html}</div>'
-            '<div class="vs-patterns"><span class="vs-patterns-title">Error Patterns:</span>'
-            f'{error_patterns_html}</div>'
-            f'{partial_html}'
+            f'{causes_html}'
             '</div>')
 
 
@@ -173,7 +164,8 @@ def get_pattern_legend_html() -> str:
     """Returns the error pattern legend cards grid."""
     legend_rows_html = ""
     for code, title, desc, ref in PATTERN_LEGEND:
-        tag_class = {"CORRECT": "vp-tag-green", "PARTIAL": "vp-tag-yellow", "EVAL_FAIL": "vp-tag-grey", "RAG_ERROR": "vp-tag-grey"}.get(code, "vp-tag-red")
+        tag_class = {"CORRECT": "vp-tag-green", "PARTIAL": "vp-tag-yellow", "REFUSAL": "vp-tag-purple",
+                     "EVAL_FAIL": "vp-tag-grey", "RAG_ERROR": "vp-tag-grey"}.get(code, "vp-tag-red")
         legend_rows_html += f'<div class="vs-legend-item"><span class="vp-tag {tag_class}">{code}</span><div class="vs-legend-desc"><strong>{title}</strong>: {desc}<div class="vs-legend-ref">📚 {ref}</div></div></div>'
 
     return f'<div class="vs-legend-grid">{legend_rows_html}</div>'

@@ -8,11 +8,11 @@ from collections import Counter
 
 # bump when rules, thresholds or pattern ids change: saved evaluations
 # with a different version are reclassified when loaded
-TAXONOMY_VERSION = 4
+TAXONOMY_VERSION = 6
 
 THRESHOLDS = {
     "correct": 0.70,  # Answer Correctness >= correct -> CORRECT
-    "partial": 0.40,  # Answer Correctness >= partial -> PARTIAL, below -> WRONG
+    "partial": 0.40,  # Answer Correctness >= partial -> PARTIAL, below -> REFUSAL or WRONG
     "metric": 0.50,   # high/low split for Precision, Recall, Faithfulness, Relevancy
 }
 
@@ -78,11 +78,10 @@ PATTERNS = {
 _VERDICT_LABELS = {
     "correct": "✅ Correct",
     "partial": "⚠️ Partial",
+    "refusal": "🟣 Refusal",
     "wrong": "❌ Wrong",
     "not_evaluated": "⚪ Not Evaluated",
 }
-# RAG errors keep the 'not_evaluated' verdict (no answer to judge) but get their own label
-RAG_ERROR_LABEL = "🔌 RAG Error"
 
 
 # ── metric availability ───────────────────────────────────────────
@@ -174,7 +173,7 @@ def classify_query_verdict(report: dict) -> dict:
     """Classify a single query result with a verdict, an error pattern and its root cause.
 
     Returns a dict with:
-      - verdict: 'correct' | 'partial' | 'wrong' | 'not_evaluated'
+      - verdict: 'correct' | 'partial' | 'refusal' | 'wrong' | 'not_evaluated'
         (also for RAG_ERROR: the RAG did not answer, report field 'rag_error')
       - verdict_label: human-readable label with emoji
       - error_pattern: pattern ID (e.g. 'RET_FAIL'); PARTIAL / REFUSAL for those answers
@@ -195,7 +194,7 @@ def classify_query_verdict(report: dict) -> dict:
         # the RAG did not answer: nothing to judge, the metrics were never computed
         return {
             "verdict": "not_evaluated",
-            "verdict_label": RAG_ERROR_LABEL,
+            "verdict_label": _VERDICT_LABELS["not_evaluated"],
             "error_pattern": "RAG_ERROR",
             "error_pattern_label": PATTERNS["RAG_ERROR"][0],
             "error_cause": None,
@@ -211,7 +210,7 @@ def classify_query_verdict(report: dict) -> dict:
     elif corr >= THRESHOLDS["partial"]:
         verdict, pattern, cause = "partial", "PARTIAL", diagnose(prec, recall, faith, relevancy)
     elif is_refusal(report.get("risposta_rag", "")):
-        verdict, pattern, cause = "wrong", "REFUSAL", _refusal_cause(prec, recall)
+        verdict, pattern, cause = "refusal", "REFUSAL", _refusal_cause(prec, recall)
     else:
         verdict, pattern = "wrong", diagnose(prec, recall, faith, relevancy)
         cause = pattern
@@ -252,7 +251,7 @@ def aggregate_diagnosis(reports: list, min_share: float = 0.10) -> dict:
     evaluated = [r for r in reports if r.get("verdict") != "not_evaluated"]
     correct = sum(1 for r in evaluated if r.get("verdict") == "correct")
     counts = Counter(r.get("error_cause") or r.get("error_pattern", "UNKNOWN")
-                     for r in evaluated if r.get("verdict") in ("partial", "wrong"))
+                     for r in evaluated if r.get("verdict") in ("partial", "refusal", "wrong"))
     n = len(evaluated)
     causes = [(p, c, c / n) for p, c in counts.most_common() if n and c / n >= min_share]
     return {"evaluated": n, "correct": correct, "causes": causes}

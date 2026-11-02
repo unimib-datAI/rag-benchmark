@@ -393,14 +393,13 @@ def _print_results(results):
     print(f"  Answer Relevancy:    {_score(metric_mean(results, 'relevancy_voto'))}")
 
     # verdict and error pattern distribution (same classification as the UI)
-    verdicts = Counter("rag_error" if r.get("rag_error") else r.get("verdict", "?") for r in results)
-    patterns = Counter(r.get("error_pattern", "?") for r in results if r.get("verdict") == "wrong")
-    partial_causes = Counter(r.get("error_cause") or "UNKNOWN" for r in results if r.get("verdict") == "partial")
+    verdicts = Counter(r.get("verdict", "?") for r in results)
     print("\n⚖️  Verdetti: " + " | ".join(f"{v}: {c}" for v, c in verdicts.most_common()))
-    if patterns:
-        print("  Pattern di errore: " + ", ".join(f"{p}: {c}" for p, c in patterns.most_common()))
-    if partial_causes:
-        print("  Cause delle risposte parziali: " + ", ".join(f"{p}: {c}" for p, c in partial_causes.most_common()))
+    for verdict, title in (("partial", "Cause delle risposte parziali"), ("refusal", "Cause dei rifiuti"),
+                           ("wrong", "Cause delle risposte sbagliate"), ("not_evaluated", "Cause delle query non valutate")):
+        causes = Counter(r.get("error_cause") or r.get("error_pattern", "?") for r in results if r.get("verdict") == verdict)
+        if causes:
+            print(f"  {title}: " + ", ".join(f"{p}: {c}" for p, c in causes.most_common()))
 
     # diagnostics
     print("\n🩺 Diagnostica Automatica:")

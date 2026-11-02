@@ -71,6 +71,12 @@ class TestMissingMetrics(unittest.TestCase):
         self.assertEqual(out["verdict"], "not_evaluated")
         self.assertEqual(out["error_pattern"], "EVAL_FAIL")
 
+    def test_rag_error_is_not_evaluated(self):
+        # same verdict and label as a judge failure: only the pattern tells the two apart
+        out = classify_query_verdict({**report(), "rag_error": "HTTP 500"})
+        self.assertEqual((out["verdict"], out["error_pattern"]), ("not_evaluated", "RAG_ERROR"))
+        self.assertEqual(out["verdict_label"], classify_query_verdict(report(invalid=["correctness_voto"]))["verdict_label"])
+
     def test_deselected_recall(self):
         # without recall, retrieval incomplete and context not extracted can't be told apart
         self.assertEqual(pattern(recall=0.0, invalid=["recall_voto"]), "UNKNOWN")
@@ -106,9 +112,14 @@ class TestPartialAndRefusal(unittest.TestCase):
 
     def test_refusal_cause_from_retrieval(self):
         out = classify_query_verdict(report(prec=0.1, recall=0.1, faith=0.0, answer="I cannot answer."))
-        self.assertEqual((out["error_pattern"], out["error_cause"]), ("REFUSAL", "RET_FAIL"))
+        self.assertEqual((out["verdict"], out["error_pattern"], out["error_cause"]), ("refusal", "REFUSAL", "RET_FAIL"))
         out = classify_query_verdict(report(answer="I cannot answer."))
         self.assertEqual(out["error_cause"], "NOT_EXTRACTED")
+
+    def test_expected_refusal_is_not_a_refusal_verdict(self):
+        # the gold says the answer is not in the documents: refusing is the right answer
+        out = classify_query_verdict(report(corr=0.9, answer="I don't know."))
+        self.assertEqual(out["verdict"], "correct")
 
 
 class TestAggregation(unittest.TestCase):
@@ -117,11 +128,12 @@ class TestAggregation(unittest.TestCase):
             report(corr=0.9),
             report(prec=0.1, recall=0.1, faith=0.9),             # wrong, RET_FAIL
             report(corr=0.5, prec=0.1, recall=0.1, faith=0.9),   # partial, cause RET_FAIL
+            report(prec=0.1, recall=0.1, answer="I cannot answer."),  # refusal, cause RET_FAIL
             report(invalid=["correctness_voto"]),                # not evaluated
         )]
         diag = aggregate_diagnosis(reps)
-        self.assertEqual(diag["evaluated"], 3)
-        self.assertEqual(diag["causes"][0][:2], ("RET_FAIL", 2))
+        self.assertEqual(diag["evaluated"], 4)
+        self.assertEqual(diag["causes"][0][:2], ("RET_FAIL", 3))
 
     def test_reclassification_on_version_change(self):
         rep = {**report(), **classify_query_verdict(report())}

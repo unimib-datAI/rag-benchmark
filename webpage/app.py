@@ -156,6 +156,16 @@ def _first_query_page():
     st.session_state.query_details_page = 1
 
 
+def _benchmark_filter(df, key):
+    """Rows of a results table whose Benchmark is picked in a multiselect: all of them when none is picked."""
+    if df["Benchmark"].nunique() < 2:
+        return df
+    col, _ = st.columns([1, 2])
+    with col:
+        picked = st.multiselect("Filter by Benchmark", sorted(df["Benchmark"].unique()), placeholder="All benchmarks", key=key)
+    return df[df["Benchmark"].isin(picked)] if picked else df
+
+
 def saved_evaluations():
     """Saved evaluations, read from disk again only when a file in valutazioni/ is added, removed or changed."""
     signature = tuple((f.name, f.stat().st_mtime_ns) for f in sorted(EVAL_DIR.glob("*.json")))
@@ -656,17 +666,17 @@ with tab_evaluation:
 
         # Warning on failed queries and truncated contexts
         ragas_stats = reports[0].get("_ragas_stats", {}) if reports else {}
-        failed_queries = sum(1 for r in reports if r.get("ragas_fallita", False))
+        # not evaluated queries (RAG errors, no Correctness) are already counted in the verdict summary:
+        # here only judged queries that miss some other metric, which leave that metric's average
+        failed_queries = sum(1 for r in reports if r.get("ragas_fallita", False) and r.get("verdict") != "not_evaluated")
         truncated_contexts = ragas_stats.get("contesti_troncati", 0)
-        rag_error_queries = sum(1 for r in reports if r.get("rag_error"))
-        if failed_queries > 0 or truncated_contexts > 0 or rag_error_queries > 0:
+        if failed_queries > 0 or truncated_contexts > 0:
             msg_parts = []
-            if rag_error_queries > 0:
-                msg_parts.append(f"**{rag_error_queries}/{len(reports)}** queries not answered by the RAG (RAG Error: not evaluated, excluded from the averages)")
             if truncated_contexts > 0:
                 msg_parts.append(f"**{truncated_contexts}** truncated contexts (exceeded model limit)")
             if failed_queries > 0:
-                msg_parts.append(f"**{failed_queries}/{len(reports)}** queries with failed RAGAS metrics (excluded from the averages)")
+                msg_parts.append(f"**{failed_queries}/{len(reports)}** judged queries with some RAGAS metric not computed "
+                                 "(excluded from the average of that metric)")
             st.markdown('<div style="margin-top: 1.5rem; margin-bottom: 1rem;">', unsafe_allow_html=True)
             st.warning("⚠️ " + " · ".join(msg_parts) + ". The averages might not reflect all queries.")
             st.markdown('</div>', unsafe_allow_html=True)
@@ -679,14 +689,26 @@ with tab_evaluation:
                 h, m = divmod(m, 60)
                 return f"{h}h {m:02d}m {s:02d}s" if h else f"{m}m {s:02d}s" if m else f"{sec:.1f}s"
             queries = timings.get("query", {})
+            total = timings.get("totale", 0)
             with st.container(key="timings"):  # keyed only to give it a top margin (style.css)
-                with st.expander(f"⏱️ Timings — total {_fmt(timings.get('totale', 0))}"):
+                with st.expander(f"⏱️ Timings — total {_fmt(total)}"):
                     rows = []
                     for src in sorted(queries):
                         n_q = sum(1 for r in reports if r.get("source") == src)
                         q = queries.get(src, 0)
-                        rows.append({"Benchmark": _short_source(src),
-                                     "RAG queries": _fmt(q), "Per query": f"{q / n_q if n_q else 0:.1f}s"})
+                        rows.append({"Phase": f"RAG queries — {_short_source(src)}",
+                                     "Time": _fmt(q), "Per query": f"{q / n_q if n_q else 0:.1f}s"})
+                    # the RAG answered these queries, so RAGAS judged them (5 metrics each)
+                    judged = sum(1 for r in reports if not r.get("rag_error"))
+                    ragas = timings.get("ragas", 0)
+                    rows.append({"Phase": "RAGAS (judge)", "Time": _fmt(ragas),
+                                 "Per query": f"{ragas / judged if judged else 0:.1f}s"})
+                    # the generic HTTP RAG receives the corpus at the start of the run; DAVE is loaded from Setup
+                    ingestion = sum(timings.get("ingestion", {}).values())
+                    if ingestion:
+                        rows.append({"Phase": "Ingestion", "Time": _fmt(ingestion), "Per query": "—"})
+                    other = total - sum(queries.values()) - ragas - ingestion
+                    rows.append({"Phase": "Other (setup)", "Time": _fmt(max(other, 0)), "Per query": "—"})
                     st.table(rows)
 
         # if there are multiple benchmarks, show breakdown
@@ -737,8 +759,8 @@ with tab_evaluation:
             'correctness_voto': 'Correctness',
             'relevancy_voto': 'Relevancy'
         }
-        display_df = display_df.rename(columns=column_rename)
-        
+        display_df = _benchmark_filter(display_df.rename(columns=column_rename), key="results_benchmark_filter")
+
         numeric_cols = [c for c in ['C. Precision', 'C. Recall', 'Faithfulness', 'Correctness', 'Relevancy'] if c in display_df.columns]
         st.dataframe(
             display_df.style.format({c: '{:.2f}' for c in numeric_cols}, na_rep="—")
@@ -784,9 +806,8 @@ with tab_evaluation:
             corr = metric_value(rep, 'correctness_voto')
             v_label = rep.get('verdict_label', '')
             pattern = rep.get('error_pattern_label', '')
-            pattern_suffix = f"  |  {pattern}" if rep.get('verdict') == 'wrong' else ""
-            if rep.get('verdict') == 'partial' and rep.get('error_cause_label'):
-                pattern_suffix = f"  |  cause: {rep['error_cause_label']}"
+            cause = rep.get('error_cause_label') or pattern
+            pattern_suffix = f"  |  cause: {cause}" if rep.get('verdict') != 'correct' and cause else ""
             label = f"{rep['query_id']}  |  {rep['source']}  |  {v_label}{pattern_suffix}  |  Correctness: {_fmt_score(corr)}"
             with st.expander(label):
                 st.markdown("**Question**")
@@ -818,7 +839,7 @@ with tab_evaluation:
                 st.markdown(dash.get_verdict_html(
                     rep.get('verdict', 'wrong'),
                     rep.get('verdict_label', '❌ Wrong'),
-                    rep.get('error_pattern_label', 'Unknown'),
+                    rep.get('error_cause_label') or rep.get('error_pattern_label', 'Unknown'),
                     rep.get('error_reason', ''),
                 ), unsafe_allow_html=True)
 
@@ -918,9 +939,6 @@ Keep the language clear, concise and directly actionable. Do not use emojis. Tot
         else:
             st.info("Expert analysis not available. Make sure the LLM Judge is accessible.")
 
-        # footer with evaluation info
-        st.markdown(dash.get_footer_html(len(reports), ollama_model, datetime.now().strftime('%d/%m/%Y %H:%M'), st.session_state.get("current_eval_name", "")), unsafe_allow_html=True)
-
 # explore tab - evaluation history and comparison
 with tab_explore:
     import plotly.graph_objects as go
@@ -1005,17 +1023,69 @@ with tab_explore:
             metric_keys = ["answer_correctness", "faithfulness", "context_precision", "context_recall"]
             metric_labels = ["Answer Correctness", "Faithfulness", "Context Precision", "Context Recall"]
 
-            # Results summary table
-            st.markdown('<div class="section-title">Metrics Results Table</div>', unsafe_allow_html=True)
-            table_agg_rows = []
-            for ev in selected_for_compare:
-                agg = ev.get("aggregate", {})
-                row = {"Evaluation": ev["name"], "RAG Engine": ev.get("rag_engine", "—"), "LLM Judge": ev.get("model", "—")}
-                for k, label in zip(metric_keys, metric_labels):
-                    row[label] = round(agg[k], 2) if agg.get(k) is not None else None
-                table_agg_rows.append(row)
-            
-            st.dataframe(pd.DataFrame(table_agg_rows), use_container_width=True)
+            # summary: best evaluation among the selected ones
+            best_ev = max(selected_for_compare, key=lambda e: e.get("aggregate", {}).get("answer_correctness") or 0)
+            best_score = best_ev.get("aggregate", {}).get("answer_correctness")
+            best_ts = datetime.fromisoformat(best_ev["timestamp"]).strftime("%d/%m/%Y %H:%M")
+
+            summary_html = (
+                '<div class="eval-card" style="border-left:4px solid #00E676;">'
+                '  <div class="eval-card-header">'
+                '    <span class="eval-card-name">🏆 Best Evaluation</span>'
+                f'    <span class="eval-best-badge">{_fmt_score(best_score)}</span>'
+                '  </div>'
+                '  <div class="eval-card-body">'
+                f'    <span class="eval-card-detail"><strong>{escape(best_ev["name"])}</strong></span>'
+                f'    <span class="eval-card-detail">RAG: {escape(str(best_ev.get("rag_engine", "?")))}</span>'
+                f'    <span class="eval-card-detail">Model: {escape(str(best_ev["model"]))}</span>'
+                f'    <span class="eval-card-detail">{best_ts}</span>'
+                '  </div>'
+                '</div>'
+            )
+            st.markdown(summary_html, unsafe_allow_html=True)
+
+            st.markdown('<div class="section-title">Metrics Comparison</div>', unsafe_allow_html=True)
+
+            # Overall or a single benchmark: the same metrics, from the averages saved with each evaluation
+            benchmarks = sorted({bm for ev in selected_for_compare for bm in ev.get("per_benchmark", {})})
+            views = {"Overall": None} | {_short_source(bm): bm for bm in benchmarks}
+            view = "Overall"
+            if len(benchmarks) > 1:
+                view = st.segmented_control("View", list(views), default="Overall", required=True,
+                                            key="explore_metrics_view", label_visibility="collapsed")
+
+            # one horizontal bar per evaluation for each metric, with its value at the end of the bar:
+            # the techniques often differ by a few hundredths, too little to see from the bar length alone
+            palette = ["#6c5ce7", "#00E676", "#FFC400", "#FF1744", "#00B0FF", "#FF6D00", "#D500F9", "#76FF03"]
+            fig = go.Figure()
+            for i, ev in enumerate(selected_for_compare):
+                agg = ev.get("aggregate", {}) if views[view] is None else ev.get("per_benchmark", {}).get(views[view], {})
+                # an evaluation without this benchmark, or a metric not computed, has no bar
+                values = [v if isinstance(v, (int, float)) else None for v in (agg.get(k) for k in metric_keys)]
+                fig.add_trace(go.Bar(
+                    y=metric_labels,
+                    x=values,
+                    orientation='h',
+                    name=ev["name"],
+                    marker_color=palette[i % len(palette)],
+                    opacity=0.85,
+                    text=["N/A" if v is None else f"{v:.2f}" for v in values],
+                    textposition='outside',
+                    cliponaxis=False,
+                ))
+            fig.update_layout(
+                barmode='group',
+                bargap=0.25,  # space between the metrics, so the thinner bars still read as groups
+                height=100 + 18 * len(metric_keys) * len(selected_for_compare),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(20,20,30,0.6)",
+                font=dict(family="Inter", color="#e0e0e0"),
+                xaxis=dict(range=[0, 1.08], gridcolor="rgba(255,255,255,0.05)"),  # room for the value labels
+                yaxis=dict(autorange="reversed"),  # metrics top to bottom in the order of metric_labels
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+                margin=dict(t=40, b=20),
+            )
+            st.plotly_chart(fig, width='stretch')
 
             # load full results for all selected evaluations
             loaded_evals = {}
@@ -1062,7 +1132,7 @@ with tab_explore:
                     row[f"Pattern ({ev['name']})"] = pattern or "—"
                 cmp_table_rows.append(row)
             if cmp_table_rows:
-                cmp_df = pd.DataFrame(cmp_table_rows)
+                cmp_df = _benchmark_filter(pd.DataFrame(cmp_table_rows), key="compare_benchmark_filter")
                 numeric_cols = [c for c in cmp_df.columns if c.startswith("Corr") or c.startswith("Faith")]
                 for c in numeric_cols:
                     cmp_df[c] = pd.to_numeric(cmp_df[c], errors='coerce')
@@ -1109,11 +1179,9 @@ with tab_explore:
 
                         for col_idx, eval_name in enumerate(eval_names_with_data):
                             res = query_results_map[selected_qid][eval_name]
-                            ev_info = next((e for e in selected_for_compare if e["name"] == eval_name), {})
 
                             with cols[col_idx]:
                                 st.markdown(f"#### 📋 {eval_name}")
-                                st.caption(f"RAG: **{ev_info.get('rag_engine', '?')}** · Judge: **{ev_info.get('model', '?')}**")
 
                                 # metrics mini-cards
                                 metrics_data = [
@@ -1136,7 +1204,7 @@ with tab_explore:
                                 st.markdown(dash.get_verdict_html(
                                     res.get('verdict', 'wrong'),
                                     res.get('verdict_label', '❌ Wrong'),
-                                    res.get('error_pattern_label', 'Unknown'),
+                                    res.get('error_cause_label') or res.get('error_pattern_label', 'Unknown'),
                                     res.get('error_reason', ''),
                                 ), unsafe_allow_html=True)
 
@@ -1149,151 +1217,8 @@ with tab_explore:
                                 with st.expander("📄 Retrieved Documents"):
                                     st.text(res.get("docs", "No documents available"))
 
-                        # delta analysis between evaluations
-                        if len(eval_names_with_data) == 2:
-                            st.markdown("---")
-                            st.markdown("##### Delta Analysis")
-                            res_a = query_results_map[selected_qid][eval_names_with_data[0]]
-                            res_b = query_results_map[selected_qid][eval_names_with_data[1]]
-                            delta_cols = st.columns(5)
-                            for d_col, m_key, m_label in zip(delta_cols,
-                                ["retrieval_voto", "recall_voto", "faithfulness_voto", "correctness_voto", "relevancy_voto"],
-                                ["C. Precision", "C. Recall", "Faithfulness", "Correctness", "Relevancy"]):
-                                val_a = metric_value(res_a, m_key)
-                                val_b = metric_value(res_b, m_key)
-                                with d_col:
-                                    if val_a is None or val_b is None:
-                                        st.metric(m_label, _fmt_score(val_b))
-                                    else:
-                                        st.metric(m_label, f"{val_b:.2f}", f"{val_b - val_a:+.2f}")
                 else:
                     st.info("No shared queries found between the selected evaluations. Make sure the evaluations were run on overlapping datasets.")
-
-            # radar or bar chart 
-            st.markdown('<div class="compare-chart">', unsafe_allow_html=True)
-
-            chart_type = st.radio(
-                "Chart Type",
-                ["Radar", "Bars"],
-                horizontal=True,
-                key="explore_chart_type",
-                label_visibility="collapsed",
-            )
-
-            # color palette for charts
-            palette = ["#6c5ce7", "#00E676", "#FFC400", "#FF1744", "#00B0FF", "#FF6D00", "#D500F9", "#76FF03"]
-
-            if chart_type == "Radar":
-                fig = go.Figure()
-                for i, ev in enumerate(selected_for_compare):
-                    agg = ev.get("aggregate", {})
-                    values = [agg.get(k) for k in metric_keys]
-                    values_closed = values + [values[0]] 
-                    labels_closed = metric_labels + [metric_labels[0]]
-                    fig.add_trace(go.Scatterpolar(
-                        r=values_closed,
-                        theta=labels_closed,
-                        fill='toself',
-                        name=ev["name"],
-                        line=dict(color=palette[i % len(palette)]),
-                        opacity=0.7,
-                    ))
-                fig.update_layout(
-                    polar=dict(
-                        bgcolor="rgba(20,20,30,0.6)",
-                        radialaxis=dict(visible=True, range=[0, 1], color="#5a5a75"),
-                        angularaxis=dict(color="#a2a2c0"),
-                    ),
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(family="Inter", color="#e0e0e0"),
-                    legend=dict(bgcolor="rgba(20,20,30,0.6)", bordercolor="rgba(255,255,255,0.1)", borderwidth=1),
-                    margin=dict(t=40, b=40),
-                )
-            else:
-                fig = go.Figure()
-                for i, ev in enumerate(selected_for_compare):
-                    agg = ev.get("aggregate", {})
-                    values = [agg.get(k) for k in metric_keys]
-                    fig.add_trace(go.Bar(
-                        x=metric_labels,
-                        y=values,
-                        name=ev["name"],
-                        marker_color=palette[i % len(palette)],
-                        opacity=0.85,
-                    ))
-                fig.update_layout(
-                    barmode='group',
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(20,20,30,0.6)",
-                    font=dict(family="Inter", color="#e0e0e0"),
-                    yaxis=dict(range=[0, 1], gridcolor="rgba(255,255,255,0.05)"),
-                    xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
-                    legend=dict(bgcolor="rgba(20,20,30,0.6)", bordercolor="rgba(255,255,255,0.1)", borderwidth=1),
-                    margin=dict(t=40, b=40),
-                )
-
-            st.plotly_chart(fig, width='stretch')
-            st.markdown('</div>', unsafe_allow_html=True)
-
-            # breakdown table per benchmark
-            st.markdown('<div class="section-title">Per Benchmark Detail</div>', unsafe_allow_html=True)
-
-            all_benchmarks: set[str] = set()
-            for ev in selected_for_compare:
-                all_benchmarks.update(ev.get("per_benchmark", {}).keys())
-
-            if all_benchmarks:
-                table_rows = []
-                for bm in sorted(all_benchmarks):
-                    row: dict[str, object] = {"Benchmark": _short_source(bm)}
-                    for ev in selected_for_compare:
-                        bm_data = ev.get("per_benchmark", {}).get(bm, {})
-                        val = bm_data.get("answer_correctness")
-                        try:
-                            row[ev["name"]] = round(float(val), 2) if val is not None and val != "—" else None
-                        except (ValueError, TypeError):
-                            row[ev["name"]] = None
-                    table_rows.append(row)
-                compare_df = pd.DataFrame(table_rows)
-
-                numeric_cols = [c for c in compare_df.columns if c != "Benchmark"]
-                for c in numeric_cols:
-                    compare_df[c] = pd.to_numeric(compare_df[c], errors='coerce')
-
-                fmt = {c: '{:.2f}' for c in numeric_cols}
-                st.dataframe(
-                    compare_df.style.format(fmt, na_rep="—")
-                    .background_gradient(
-                        subset=numeric_cols,
-                        cmap='RdYlGn', vmin=0, vmax=1,
-                    ),
-                    width='stretch',
-                    hide_index=True,
-                )
-            else:
-                st.info("No per-benchmark data available.")
-
-            # summary: best evaluation among the selected ones
-            best_ev = max(selected_for_compare, key=lambda e: e.get("aggregate", {}).get("answer_correctness") or 0)
-            best_score = best_ev.get("aggregate", {}).get("answer_correctness")
-            best_ts = datetime.fromisoformat(best_ev["timestamp"]).strftime("%d/%m/%Y %H:%M")
-
-            summary_html = (
-                '<div class="eval-card" style="border-left:4px solid #00E676;">'
-                '  <div class="eval-card-header">'
-                '    <span class="eval-card-name">🏆 Best Evaluation</span>'
-                f'    <span class="eval-best-badge">{_fmt_score(best_score)}</span>'
-                '  </div>'
-                '  <div class="eval-card-body">'
-                f'    <span class="eval-card-detail"><strong>{escape(best_ev["name"])}</strong></span>'
-                f'    <span class="eval-card-detail">RAG: {escape(str(best_ev.get("rag_engine", "?")))}</span>'
-                f'    <span class="eval-card-detail">Model: {escape(str(best_ev["model"]))}</span>'
-                f'    <span class="eval-card-detail">{best_ts}</span>'
-                '  </div>'
-                '</div>'
-            )
-            st.markdown(summary_html, unsafe_allow_html=True)
 
             # Comparative Expert RAG Report (LLM-generated)
             if len(selected_for_compare) >= 2:
