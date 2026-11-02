@@ -8,6 +8,8 @@ from pathlib import Path
 
 # used to import evaluator and persistence from the same folder
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from corpus_sources import custom_benchmarks
 
 # Ensure UTF-8 output on Windows consoles
 if hasattr(sys.stdout, "reconfigure"):
@@ -37,6 +39,7 @@ BENCHMARK_MAP = {
     "OHRBENCH": "Tutto_OHRBench_DAVE.jsonl",
     "SQUAD": "Tutto_SQUAD.jsonl",
 }
+BENCHMARK_MAP.update({name.upper(): str(path) for name, path in custom_benchmarks().items()})  # datasets in Custom/
 ALL_BENCHMARKS = list(BENCHMARK_MAP.keys())
 
 HEADER = r"""

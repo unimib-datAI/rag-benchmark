@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent
 BENCHMARKS_DIR = ROOT_DIR / "Benchmarks"
 RUN_DIR = ROOT_DIR / "Run"
+CUSTOM_DIR = ROOT_DIR / "Custom"
 
 MAX_DOC_CHARS = 500_000
 
@@ -146,6 +147,34 @@ _CORPORA = {
     "CRAG": lambda: _per_question("CRAG"),
     "OHRBench": _ohrbench,
 }
+
+
+def custom_benchmarks():
+    """User datasets found in Custom/<name>/: {name: questions file (absolute path)}.
+    Each folder holds questions.jsonl and a documents/ folder of .txt/.md files. The corpus is registered
+    in _CORPORA under the "source" of the first question (the folder name if it has none)."""
+    found = {}
+    for folder in sorted(CUSTOM_DIR.glob("*/")) if CUSTOM_DIR.is_dir() else []:
+        questions = folder / "questions.jsonl"
+        if not questions.is_file():
+            continue
+        source = benchmark_source(questions)
+        source = folder.name if source == "default" else source
+        found[folder.name] = questions
+        _CORPORA[source] = lambda folder=folder: _custom_corpus(folder / "documents")
+        DAVE_COLLECTIONS[folder.name] = source  # lets the Setup tab and ingest_dave/ingest_http upload it
+    return found
+
+
+def _custom_corpus(corpus_dir):
+    def docs():
+        for path in sorted(corpus_dir.rglob("*")):
+            if path.suffix.lower() in (".txt", ".md") and path.is_file():
+                yield path.relative_to(corpus_dir).as_posix(), path.read_text(encoding="utf-8-sig")
+    return [corpus_dir], docs
+
+
+custom_benchmarks()  # registers the corpus of every dataset in Custom/
 
 
 def _split_long_text(text, max_chars):

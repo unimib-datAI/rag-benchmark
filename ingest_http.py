@@ -22,6 +22,7 @@ import requests
 from tqdm import tqdm
 
 import ingest_dave
+from corpus_sources import custom_benchmarks
 
 BASE_DIR = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("STATE_DIR") or BASE_DIR)  # a mounted folder in Docker
@@ -34,6 +35,7 @@ REQUEST_TIMEOUT = 300
 SOURCE_OF = {"LegalBench": "LegalBench-RAG", "MultiHop": "MultiHop-RAG", "SQuAD": "SQuAD-it",
              "CRAG": "CRAG", "MTRAG": "MTRAG"}
 # OHRBench documents travel with each question: nothing to upload
+SOURCE_OF.update({name: ingest_dave.COLLECTIONS[name] for name in custom_benchmarks()})  # datasets in Custom/
 UPLOADABLE = list(SOURCE_OF)
 
 

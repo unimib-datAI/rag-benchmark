@@ -19,6 +19,7 @@ from evaluator import run_evaluation, build_judge_llm, classify_query_verdict, F
 from taxonomy import metric_mean, metric_value, needs_reclassification
 from persistence import save_evaluation, list_evaluations, load_evaluation, delete_evaluation, set_expert_report, EVAL_DIR
 import api_guide
+import corpus_sources
 import answerable
 import ingest_http
 import cleanup
@@ -60,6 +61,10 @@ BENCHMARK_MAPPING = {
     "SQuAD-it (Italian Q&A on Wikipedia)": "Tutto_SQUAD.jsonl"
 }
 
+# built-in benchmarks plus the datasets found in Custom/ (the latter are not part of the Catalogue/download flow)
+EVAL_BENCHMARKS = {**BENCHMARK_MAPPING,
+                   **{name: str(path) for name, path in corpus_sources.custom_benchmarks().items()}}
+
 # benchmark file -> Run/ script that builds it
 EXTRACT_SCRIPTS = {
     "Tutto_LEGALBENCH.jsonl": "extract_legalbenchmark.py",
@@ -84,6 +89,8 @@ def _benchmark_ready(collection):
     """What the Catalogue and Setup call "downloaded": the raw files are in Benchmarks/, the query file
     is built in Run/ and the corpus is found. `collection` is the name used by ingest_dave (e.g. "SQuAD")."""
     import ingest_dave
+    if collection in corpus_sources.custom_benchmarks():  # Custom/ datasets: nothing to download, just the folder
+        return ingest_dave.find_source(collection) is not None
     download_name = next(k for k, v in BENCHMARK_SHORT.items() if v == collection)
     query_file = next(f for n, f in BENCHMARK_MAPPING.items() if n.startswith(download_name))
     return (is_downloaded(download_name) and (RUN_DIR / query_file).exists()
@@ -365,23 +372,23 @@ with st.sidebar:
 
     st.markdown("### Benchmark", help="Which benchmark query sets to evaluate.")
     # DAVE: only the benchmarks already indexed; custom RAG: all (the corpus is uploaded to /ingest)
-    default_benchmarks = _indexed_benchmarks() if "DAVE" in motore_rag else list(BENCHMARK_MAPPING)
+    default_benchmarks = _indexed_benchmarks() if "DAVE" in motore_rag else list(EVAL_BENCHMARKS)
     _init("bench_select", default_benchmarks if ui_saved.get("benchmarks") is None else ui_saved["benchmarks"])
     if st.session_state.get("engine_prev", motore_rag) != motore_rag:
         st.session_state.bench_select = default_benchmarks   # switching engine resets the selection
     st.session_state.engine_prev = motore_rag
-    st.session_state.bench_select = [n for n in st.session_state.bench_select if n in BENCHMARK_MAPPING]
+    st.session_state.bench_select = [n for n in st.session_state.bench_select if n in EVAL_BENCHMARKS]
     selected_names = st.multiselect(
         "Benchmarks",
-        options=list(BENCHMARK_MAPPING.keys()),
+        options=list(EVAL_BENCHMARKS.keys()),
         key="bench_select",
         label_visibility="collapsed",
         help="Which benchmark query sets to evaluate. With DAVE the default is the ones already indexed; "
              "with a custom RAG, all of them.",
     )
 
-    selected_files = [BENCHMARK_MAPPING[name] for name in selected_names]
-    st.caption(f"{len(selected_names)} of {len(BENCHMARK_MAPPING)} selected")
+    selected_files = [EVAL_BENCHMARKS[name] for name in selected_names]
+    st.caption(f"{len(selected_names)} of {len(EVAL_BENCHMARKS)} selected")
 
     _init("sample_size_widget", _clamp(ui_saved.get("sample_size"), 1, 10**6, 3))
     sample_size_param = st.number_input(
@@ -488,7 +495,7 @@ with tab_evaluation:
         # datasets are loaded from the selected files in the sidebar
         dataset_items = []
         sampling_notes = []
-        files_to_run = st.session_state.get("selected_files", list(BENCHMARK_MAPPING.values()))
+        files_to_run = st.session_state.get("selected_files", list(EVAL_BENCHMARKS.values()))
         for file_name in files_to_run:
             path = RUN_DIR / file_name
             if path.exists():
@@ -947,7 +954,7 @@ with tab_explore:
 
             # benchmarks that actually have results in the run; older files fall back to the query files used
             run_benchmarks = list(ev.get("per_benchmark") or {}) or [
-                next((n for n, f in BENCHMARK_MAPPING.items() if f == used), used).split(" (")[0]
+                next((n for n, f in EVAL_BENCHMARKS.items() if f == used), used).split(" (")[0]
                 for used in ev.get("benchmarks_used", [])]
             benchmarks_text = ", ".join(run_benchmarks) or "—"
 

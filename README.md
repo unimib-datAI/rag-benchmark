@@ -1,158 +1,159 @@
-# 🚀 SuperRagBench — RAG Evaluation Suite
+# SuperRagBench — RAG Evaluation Suite
 
-**SuperRagBench** è una suite completa per la valutazione sistematica, standardizzata e approfondita di sistemi **RAG (Retrieval-Augmented Generation)**.
-Adotta il paradigma **LLM-as-a-Judge** integrando le metriche della libreria **Ragas** per misurare oggettivamente la qualità del recupero (*retrieval*) e della generazione delle risposte su scenari reali, domini verticali e casi limite (*stress-test*).
+**SuperRagBench** is a complete suite for the systematic, standardized and in-depth evaluation of **RAG (Retrieval-Augmented Generation)** systems.
+It adopts the **LLM-as-a-Judge** paradigm, integrating the metrics of the **Ragas** library to objectively measure the quality of retrieval and answer generation on real-world scenarios, vertical domains and edge cases (*stress tests*).
 
-Il progetto offre sia una **Dashboard Web interattiva** (Streamlit) per l'analisi visiva, il monitoraggio in tempo reale (TPS, token) e il confronto multi-run (Radar Chart, delta metriche), sia una potente **CLI da terminale** con supporto per modalità interattiva e modalità headless/batch per pipeline di CI/CD.
-
----
-
-## 📑 Indice
-
-1. [Perché SuperRagBench](#-perché-superragbench)
-2. [I 6 Benchmark Inclusi](#-i-6-benchmark-inclusi)
-3. [Metriche di Valutazione (RAGAS)](#-metriche-di-valutazione-ragas)
-4. [Diagnostica Automatica & Error Pattern (Novità)](#-diagnostica-automatica--error-pattern)
-5. [Motori RAG & Modelli Judge Supportati](#-motori-rag--modelli-judge-supportati)
-6. [Requisiti di Sistema](#-requisiti-di-sistema)
-7. [Installazione Rapida](#-installazione-rapida)
-8. [Guida all'Uso](#-guida-alluso)
-   - [Opzione A: Dashboard Web (Streamlit)](#opzione-a-dashboard-web-streamlit)
-   - [Opzione B: Interfaccia CLI da Terminale](#opzione-b-interfaccia-cli-da-terminale)
-9. [Configurazione (`config.json` e `.env`)](#-configurazione)
-10. [Collegare il proprio RAG (`/ingest` e `/ask`)](#-collegare-il-proprio-rag)
-11. [Integrazione con DAVE (Elasticsearch)](#-integrazione-con-dave)
-12. [Aggiunta di un Nuovo Benchmark](#-aggiunta-di-un-nuovo-benchmark)
-13. [Struttura del Progetto](#-struttura-del-progetto)
+The project offers both an interactive **Web Dashboard** (Streamlit) for visual analysis, real-time monitoring (TPS, tokens) and multi-run comparison (Radar Chart, metric deltas), and a powerful **terminal CLI** supporting an interactive mode and a headless/batch mode for CI/CD pipelines.
 
 ---
 
-## 🎯 Perché SuperRagBench
+## Table of Contents
 
-Molti sistemi RAG vengono valutati esclusivamente su query semplici, contesti sintetici o domini generici. Nella realtà applicativa e aziendale, i sistemi documentali devono affrontare sfide complesse:
-
-- **Contratti legali:** dove una singola parola parafrasata o una data errata costituisce un errore critico.
-- **Sintesi multi-documento:** la risposta non risiede in un solo passaggio ma va ricostruita aggregando 2–4 documenti distinti.
-- **Pagine web rumorose:** documenti con markup HTML grezzo, snippet fuorvianti e trappole controfattuali.
-- **Conversazioni multi-turno:** follow-up con pronomi, ellissi e risoluzione di co-referenze storiche.
-- **Documenti degradati (OCR):** scansioni cartacee con tabelle corrotte e caratteri alterati.
-- **Supporto multilingua:** comprensione linguistica puntuale su testi in lingua italiana.
-
-SuperRagBench aggrega dataset scientifici di riferimento pensati appositamente per sollecitare e mettere sotto stress ogni singolo anello della catena RAG.
+1. [Why SuperRagBench](#why-superragbench)
+2. [The 6 Included Benchmarks](#the-6-included-benchmarks)
+3. [Evaluation Metrics (RAGAS)](#evaluation-metrics-ragas)
+4. [Automatic Diagnostics & Error Patterns](#automatic-diagnostics--error-patterns)
+5. [Supported RAG Engines & Judge Models](#supported-rag-engines--judge-models)
+6. [System Requirements](#system-requirements)
+7. [Quick Installation](#quick-installation)
+8. [Usage Guide](#usage-guide)
+   - [Option A: Web Dashboard (Streamlit)](#option-a-web-dashboard-streamlit)
+   - [Option B: Terminal CLI](#option-b-terminal-cli)
+9. [Configuration (`config.json` and `.env`)](#configuration)
+10. [Connecting Your Own RAG (`/ingest` and `/ask`)](#connecting-your-own-rag)
+11. [DAVE Integration (Elasticsearch)](#dave-integration)
+12. [Creating Your Own Dataset (Practical Guide)](#creating-your-own-dataset-practical-guide)
+13. [Adding a New Benchmark](#adding-a-new-benchmark)
+14. [Project Structure](#project-structure)
 
 ---
 
-## 📚 I 6 Benchmark Inclusi
+## Why SuperRagBench
 
-Ogni benchmark è pre-elaborato e normalizzato in formato **JSONL** (`Run/Tutto_*.jsonl`) per garantire un caricamento in streaming efficiente a basso consumo di memoria (eliminando i rischi di `MemoryError` su dataset estesi):
+Many RAG systems are evaluated only on simple queries, synthetic contexts or generic domains. In real business applications, document systems must face complex challenges:
 
-| Benchmark | Dataset Normalizzato | Dominio & Debolezza Testata |
+- **Legal contracts:** where a single paraphrased word or a wrong date is a critical error.
+- **Multi-document synthesis:** the answer does not live in a single passage but must be reconstructed by aggregating 2–4 distinct documents.
+- **Noisy web pages:** documents with raw HTML markup, misleading snippets and counterfactual traps.
+- **Multi-turn conversations:** follow-ups with pronouns, ellipsis and resolution of historical co-references.
+- **Degraded documents (OCR):** paper scans with corrupted tables and altered characters.
+- **Multilingual support:** accurate language understanding on Italian-language texts.
+
+SuperRagBench aggregates reference scientific datasets designed specifically to stress every single link in the RAG chain.
+
+---
+
+## The 6 Included Benchmarks
+
+Each benchmark is pre-processed and normalized into **JSONL** format (`Run/Tutto_*.jsonl`) to guarantee efficient, low-memory streaming loading (eliminating the risk of `MemoryError` on large datasets):
+
+| Benchmark | Normalized Dataset | Domain & Weakness Tested |
 | :--- | :--- | :--- |
-| **LegalBench-RAG** | `Tutto_LEGALBENCH.jsonl` | **Contratti legali reali** (691 contratti). Valuta la capacità di estrarre clausole contrattuali precise senza allucinazioni o parafrasi. |
-| **MultiHop-RAG** | `Tutto_MULTIHOP.jsonl` | **Sintesi multi-documento** (609 news). Richiede il ragionamento logico e l'aggregazione di informazioni distribuite tra 2 e 4 documenti diversi. |
-| **CRAG** (Meta) | `Tutto_CRAG_DAVE.jsonl` | **Web HTML & Rumore**. Misura la resilienza a pagine web non strutturate, frammenti rumorosi e domande con false premesse. |
-| **MTRAG** | `Tutto_MTRAG_DAVE.jsonl` | **Dialoghi multi-turno**. Verifica la gestione della memoria della conversazione e la corretta interpretazione dei riferimenti contestuali. |
-| **OHRBench** | `Tutto_OHRBench_DAVE.jsonl` | **Scansioni e Rumore OCR**. Documenti aziendali/accademici con tabelle corrotte, caratteri degradati e formule matematiche. |
-| **SQuAD-it** | `Tutto_SQUAD.jsonl` | **Comprensione in lingua italiana** (2.007 paragrafi Wikipedia). Valuta le performance estrattive su testi e query in italiano. |
+| **LegalBench-RAG** | `Tutto_LEGALBENCH.jsonl` | **Real legal contracts** (691 contracts). Evaluates the ability to extract precise contract clauses without hallucinations or paraphrasing. |
+| **MultiHop-RAG** | `Tutto_MULTIHOP.jsonl` | **Multi-document synthesis** (609 news articles). Requires logical reasoning and aggregation of information spread across 2 to 4 different documents. |
+| **CRAG** (Meta) | `Tutto_CRAG_DAVE.jsonl` | **Web HTML & Noise**. Measures resilience to unstructured web pages, noisy fragments and questions with false premises. |
+| **MTRAG** | `Tutto_MTRAG_DAVE.jsonl` | **Multi-turn dialogues**. Verifies conversation memory handling and correct interpretation of contextual references. |
+| **OHRBench** | `Tutto_OHRBench_DAVE.jsonl` | **Scans & OCR Noise**. Business/academic documents with corrupted tables, degraded characters and mathematical formulas. |
+| **SQuAD-it** | `Tutto_SQUAD.jsonl` | **Italian-language comprehension** (2,007 Wikipedia paragraphs). Evaluates extractive performance on Italian texts and queries. |
 
 ---
 
-## 📏 Metriche di Valutazione (RAGAS)
+## Evaluation Metrics (RAGAS)
 
-La valutazione impiega un modello linguistico avanzato in modalità **LLM-as-a-Judge**. SuperRagBench calcola le 5 metriche cardine della libreria RAGAS, permettendo all'utente di selezionare quali calcolare per ottimizzare tempi e costi:
+The evaluation uses an advanced language model in **LLM-as-a-Judge** mode. SuperRagBench computes the 5 core metrics of the RAGAS library, letting the user choose which ones to compute to optimize time and cost:
 
-| Metrica | Ambito | Descrizione |
+| Metric | Scope | Description |
 | :--- | :--- | :--- |
-| **Context Precision** | *Retrieval* | Valuta se i passaggi recuperati dal motore RAG sono effettivamente pertinenti alla domanda. |
-| **Context Recall** | *Retrieval* | Verifica se i documenti recuperati contengono tutte le informazioni necessarie per formulare la risposta. |
-| **Faithfulness** | *Generazione* | Misura se la risposta generata è fondata strettamente sui soli documenti recuperati (assenza di allucinazioni). |
-| **Answer Correctness** | *Generazione* | Misura l'accuratezza semantica e fattuale della risposta rispetto alla risposta di riferimento (*ground truth*). |
-| **Answer Relevancy** | *Generazione* | Misura quanto la risposta fornita sia diretta e pertinente rispetto alla domanda posta. |
+| **Context Precision** | *Retrieval* | Evaluates whether the passages retrieved by the RAG engine are actually relevant to the question. |
+| **Context Recall** | *Retrieval* | Checks whether the retrieved documents contain all the information needed to formulate the answer. |
+| **Faithfulness** | *Generation* | Measures whether the generated answer is grounded strictly in the retrieved documents alone (no hallucinations). |
+| **Answer Correctness** | *Generation* | Measures the semantic and factual accuracy of the answer against the reference answer (*ground truth*). |
+| **Answer Relevancy** | *Generation* | Measures how direct and pertinent the provided answer is with respect to the question asked. |
 
-> **OHRBench:** il RAG fa retrieval sulle oltre 8.500 pagine PDF del benchmark, convertite in testo con errori OCR realistici (versione `semantic_noise_MinerU_moderate` di `retrieval.zip`, impostata in `OHR_VERSION` in `corpus_sources.py`). L'evidenza gold della domanda non viene mai passata al RAG. Circa l'1,6% delle domande di `qas.json` riguarda documenti assenti da questa versione del corpus (nomi di file non allineati nei dati ufficiali).
+> **OHRBench:** the RAG performs retrieval over the 8,500+ PDF pages of the benchmark, converted to text with realistic OCR errors (the `semantic_noise_MinerU_moderate` version of `retrieval.zip`, set in `OHR_VERSION` in `corpus_sources.py`). The gold evidence of the question is never passed to the RAG. About 1.6% of the questions in `qas.json` refer to documents missing from this corpus version (file names not aligned in the official data).
 
 ---
 
-## 🔬 Diagnostica Automatica & Error Pattern
+## Automatic Diagnostics & Error Patterns
 
-SuperRagBench include un motore euristico (`webpage/taxonomy.py`, funzione `classify_query_verdict`) che analizza le metriche calcolate query per query, **senza chiamate LLM aggiuntive**, classificando lo stato e la causa del fallimento. Le soglie sono definite una sola volta in `THRESHOLDS` (Correct `0.70`, Partial `0.40`, soglia alto/basso delle metriche diagnostiche `0.50`) e usate da UI, CLI e legenda.
+SuperRagBench includes a heuristic engine (`webpage/taxonomy.py`, function `classify_query_verdict`) that analyzes the metrics computed query by query, **with no additional LLM calls**, classifying the state and cause of failure. The thresholds are defined once in `THRESHOLDS` (Correct `0.70`, Partial `0.40`, high/low threshold of the diagnostic metrics `0.50`) and used by the UI, CLI and legend.
 
-### 1. Verdetto Query
-- ✅ **Correct** (`Answer Correctness >= 0.70`): la risposta è corretta e allineata al riferimento.
-- ⚠️ **Partial** (`0.40 <= Answer Correctness < 0.70`): risposta parzialmente corretta o incompleta; viene indicata anche la **causa probabile** (stesso codice dei pattern di errore).
-- ❌ **Wrong** (`Answer Correctness < 0.40`): risposta errata o rifiuto da parte del modello.
-- ⚪ **Not Evaluated**: RAGAS non ha calcolato la *Answer Correctness*; la query è esclusa dalla distribuzione degli errori.
+### 1. Query Verdict
+- **Correct** (`Answer Correctness >= 0.70`): the answer is correct and aligned with the reference.
+- **Partial** (`0.40 <= Answer Correctness < 0.70`): partially correct or incomplete answer; the **probable cause** is also reported (same code as the error patterns).
+- **Wrong** (`Answer Correctness < 0.40`): wrong answer or refusal by the model.
+- **Not Evaluated**: RAGAS did not compute *Answer Correctness*; the query is excluded from the error distribution.
 
-### 2. Tassonomia dei Pattern di Errore
-Per le risposte errate (e come causa delle risposte parziali) il pattern deriva da una tabella decisionale su *Context Precision*, *Context Recall*, *Faithfulness* e *Answer Relevancy* (alto = `>= 0.50`):
+### 2. Error Pattern Taxonomy
+For wrong answers (and as the cause of partial answers) the pattern comes from a decision table on *Context Precision*, *Context Recall*, *Faithfulness* and *Answer Relevancy* (high = `>= 0.50`):
 
 | Retrieval (Precision / Recall) | Faithfulness | Pattern |
 | :--- | :--- | :--- |
-| entrambe basse | bassa | `TOTAL_FAIL` |
-| entrambe basse | alta / non calcolata | `RET_FAIL` |
-| almeno una alta | bassa | `HALLUC` |
-| Precision alta, Recall bassa | alta | `RET_INCOMPLETE` |
-| Precision bassa, Recall alta | alta | `RET_NOISE` |
-| entrambe alte | alta | `OFF_TOPIC` se *Relevancy* bassa, altrimenti `NOT_EXTRACTED` |
-| metriche mancanti | — | `UNKNOWN` |
+| both low | low | `TOTAL_FAIL` |
+| both low | high / not computed | `RET_FAIL` |
+| at least one high | low | `HALLUC` |
+| Precision high, Recall low | high | `RET_INCOMPLETE` |
+| Precision low, Recall high | high | `RET_NOISE` |
+| both high | high | `OFF_TOPIC` if *Relevancy* is low, otherwise `NOT_EXTRACTED` |
+| missing metrics | — | `UNKNOWN` |
 
-| Pattern ID | Nome Pattern | Causa & Diagnostica | Riferimento |
+| Pattern ID | Pattern Name | Cause & Diagnostics | Reference |
 | :--- | :--- | :--- | :--- |
-| `RET_FAIL` | **Retrieval Failure** | *Precision* e *Recall* basse: il motore RAG non ha trovato i documenti corretti. Suggerisce di rivedere embeddings, chunking o adottare ricerca ibrida. | Barnett et al. 2024 — FP1 *Missing Content*, FP2 *Missed the Top Ranked Documents* |
-| `RET_INCOMPLETE` | **Incomplete Retrieval** | *Precision* alta ma *Recall* bassa: trovati passaggi pertinenti ma privi dei dettagli chiave. Suggerisce di aumentare il `top_k`. | Barnett et al. 2024 — FP2, FP3 *Not in Context* |
-| `RET_NOISE` | **Retrieval Noise** | *Recall* alta ma *Precision* bassa, modello fedele: i documenti utili ci sono ma sono mescolati a molti irrilevanti. Suggerisce un re-ranker o una soglia di similarità più severa. | Chen et al. 2024 (RGB, *Noise Robustness*); Barnett et al. 2024 — FP3 |
-| `HALLUC` | **Hallucination** | Contesto rilevante presente, ma *Faithfulness* bassa: il modello inventa informazioni non supportate. Suggerisce di abbassare la temperatura o rivedere il system prompt. | Es et al. 2024 (RAGAS, *Faithfulness*); Niu et al. 2024 (RAGTruth) |
-| `NOT_EXTRACTED` | **Context Not Extracted** | Contesto completo e modello fedele, ma risposta errata: l'LLM non riesce a estrarre la risposta dal contesto (es. effetto *lost in the middle* su contesti lunghi). Suggerisce l'uso di un re-ranker o riduzione del contesto. | Barnett et al. 2024 — FP4 *Not Extracted*; Liu et al. 2024 (*Lost in the Middle*) |
-| `OFF_TOPIC` | **Off-Topic Answer** | Contesto completo e modello fedele, ma *Answer Relevancy* bassa: la risposta non risponde alla domanda. Suggerisce di rivedere il system prompt. | Es et al. 2024 (RAGAS, *Answer Relevance*) |
-| `REFUSAL` | **Refusal / Non-Answer** | Il modello rifiuta di rispondere (keyword multilingua cercate nei primi 200 caratteri della risposta). La causa probabile è ricavata dal solo retrieval: se il contesto era sufficiente diventa `NOT_EXTRACTED`. | Chen et al. 2024 (RGB, *Negative Rejection*); Yang et al. 2024 (CRAG, risposte *missing*) |
-| `TOTAL_FAIL` | **System Collapse** | Retrieval fallito (*Precision* e *Recall* basse) **e** *Faithfulness* bassa. Richiede una revisione dell'intera pipeline RAG. | Categoria propria (combinazione di `RET_FAIL` e `HALLUC`) |
-| `PARTIAL` | **Partial Answer** | Risposta incompleta (correttezza intermedia tra 0.40 e 0.70), con causa probabile calcolata con la stessa tabella. | Barnett et al. 2024 — FP7 *Incomplete* |
-| `CORRECT` | **Correct Answer** | Risposta ampiamente corretta (correttezza >= 0.70). | Es et al. 2024 (RAGAS, *Answer Correctness*) |
-| `EVAL_FAIL` | **Evaluation Failure** | RAGAS non ha calcolato la *Answer Correctness* (errore del giudice, timeout o metrica non selezionata): verdetto *Not Evaluated*, esclusa dal conteggio degli errori. | Errore del valutatore, non del RAG |
-| `RAG_ERROR` | **RAG Error** | Il RAG non ha risposto (HTTP diverso da `200`, timeout, eccezione, risposta vuota, es. DAVE che chiude lo stream vuoto): verdetto *Not Evaluated*, la query non viene inviata a RAGAS ed è esclusa dalle medie e dal conteggio degli errori. Se nessuna query riceve risposta la valutazione si ferma e non viene salvata. | Errore dell'infrastruttura, non una risposta sbagliata |
-| `UNKNOWN` | **Unclassified Error** | Risposta errata, ma la causa non è determinabile perché mancano metriche diagnostiche (NaN o non selezionate). | — |
+| `RET_FAIL` | **Retrieval Failure** | Low *Precision* and *Recall*: the RAG engine did not find the correct documents. Suggests reviewing embeddings, chunking or adopting hybrid search. | Barnett et al. 2024 — FP1 *Missing Content*, FP2 *Missed the Top Ranked Documents* |
+| `RET_INCOMPLETE` | **Incomplete Retrieval** | High *Precision* but low *Recall*: relevant passages were found but lack key details. Suggests increasing `top_k`. | Barnett et al. 2024 — FP2, FP3 *Not in Context* |
+| `RET_NOISE` | **Retrieval Noise** | High *Recall* but low *Precision*, faithful model: the useful documents are there but mixed with many irrelevant ones. Suggests a re-ranker or a stricter similarity threshold. | Chen et al. 2024 (RGB, *Noise Robustness*); Barnett et al. 2024 — FP3 |
+| `HALLUC` | **Hallucination** | Relevant context present, but low *Faithfulness*: the model invents unsupported information. Suggests lowering the temperature or reviewing the system prompt. | Es et al. 2024 (RAGAS, *Faithfulness*); Niu et al. 2024 (RAGTruth) |
+| `NOT_EXTRACTED` | **Context Not Extracted** | Complete context and faithful model, but wrong answer: the LLM fails to extract the answer from the context (e.g. *lost in the middle* effect on long contexts). Suggests using a re-ranker or reducing the context. | Barnett et al. 2024 — FP4 *Not Extracted*; Liu et al. 2024 (*Lost in the Middle*) |
+| `OFF_TOPIC` | **Off-Topic Answer** | Complete context and faithful model, but low *Answer Relevancy*: the answer does not address the question. Suggests reviewing the system prompt. | Es et al. 2024 (RAGAS, *Answer Relevance*) |
+| `REFUSAL` | **Refusal / Non-Answer** | The model refuses to answer (multilingual keywords searched in the first 200 characters of the answer). The probable cause is derived from retrieval alone: if the context was sufficient it becomes `NOT_EXTRACTED`. | Chen et al. 2024 (RGB, *Negative Rejection*); Yang et al. 2024 (CRAG, *missing* answers) |
+| `TOTAL_FAIL` | **System Collapse** | Retrieval failed (low *Precision* and *Recall*) **and** low *Faithfulness*. Requires a review of the entire RAG pipeline. | Own category (combination of `RET_FAIL` and `HALLUC`) |
+| `PARTIAL` | **Partial Answer** | Incomplete answer (correctness between 0.40 and 0.70), with the probable cause computed using the same table. | Barnett et al. 2024 — FP7 *Incomplete* |
+| `CORRECT` | **Correct Answer** | Largely correct answer (correctness >= 0.70). | Es et al. 2024 (RAGAS, *Answer Correctness*) |
+| `EVAL_FAIL` | **Evaluation Failure** | RAGAS did not compute *Answer Correctness* (judge error, timeout or metric not selected): *Not Evaluated* verdict, excluded from the error count. | Evaluator error, not a RAG error |
+| `RAG_ERROR` | **RAG Error** | The RAG did not answer (HTTP status other than `200`, timeout, exception, empty answer, e.g. DAVE closing an empty stream): *Not Evaluated* verdict, the query is not sent to RAGAS and is excluded from averages and the error count. If no query gets an answer the evaluation stops and is not saved. | Infrastructure error, not a wrong answer |
+| `UNKNOWN` | **Unclassified Error** | Wrong answer, but the cause cannot be determined because diagnostic metrics are missing (NaN or not selected). | — |
 
-### 3. Metriche mancanti, medie e diagnostica aggregata
-- Le metriche non calcolate (NaN o deselezionate nella UI) vengono salvate in `metriche_non_valide`, **ignorate** dal classificatore, escluse dalle medie (UI, CLI e file salvati) e mostrate come `N/A` / `—`. Per le valutazioni salvate prima di questa modifica, in una query con `ragas_fallita` i valori esattamente `0.0` sono considerati non calcolati.
-- La **diagnostica aggregata** (pannello *Advanced Heuristic Analysis* e CLI) è costruita dalla distribuzione dei pattern per query: elenca le cause che riguardano almeno il 10% delle query valutate, contando anche le cause delle risposte parziali e dei rifiuti.
-- Ogni classificazione salva `taxonomy_version`: le valutazioni salvate con una versione diversa vengono riclassificate automaticamente all'apertura.
-- Test del classificatore: `.venv/Scripts/python.exe test/test_taxonomy.py -v`
+### 3. Missing Metrics, Averages and Aggregate Diagnostics
+- Metrics that were not computed (NaN or deselected in the UI) are ignored by the classifier, excluded from the averages and shown as `N/A`.
+- The **aggregate diagnostics** (*Advanced Heuristic Analysis* panel and CLI) are built from the per-query pattern distribution: they list the causes affecting at least 10% of the evaluated queries, also counting the causes of partial answers and refusals.
+- Each classification saves `taxonomy_version`: evaluations saved with a different version are automatically reclassified when opened.
+- Classifier tests: `.venv/Scripts/python.exe test/test_taxonomy.py -v`
 
-> **Nota metodologica:** la tassonomia è un'euristica costruita sulle metriche RAGAS e allineata alla letteratura indicata; le soglie (0.4 / 0.5 / 0.7) sono scelte empiriche non calibrate, e il rilevamento di `REFUSAL` è basato su keyword. I riferimenti bibliografici completi sono in [`riferimenti_tassonomia_errori.txt`](riferimenti_tassonomia_errori.txt).
+> **Methodological note:** the taxonomy is a heuristic built on the RAGAS metrics and aligned with the cited literature; the thresholds (0.4 / 0.5 / 0.7) are uncalibrated empirical choices, and `REFUSAL` detection is keyword-based. Full bibliographic references are in [`riferimenti_tassonomia_errori.txt`](riferimenti_tassonomia_errori.txt).
 
 ---
 
-## 🔌 Motori RAG & Modelli Judge Supportati
+## Supported RAG Engines & Judge Models
 
-### Motori RAG Sotto Esame
+### RAG Engines Under Test
 1. **Local RAG (BM25 / Custom HTTP)**:
-   - Qualsiasi server RAG locale o remoto che espone i due endpoint `POST /ingest` e `POST /ask` (vedi [Collegare il proprio RAG](#-collegare-il-proprio-rag)).
+   - Any local or remote RAG server exposing the two endpoints `POST /ingest` and `POST /ask` (see [Connecting Your Own RAG](#connecting-your-own-rag)).
 2. **DAVE (Elasticsearch / Next.js / tRPC)**:
-   - Piattaforma documentale con indicizzazione full-text/ibrida e generazione LLM integrata via streaming, con autenticazione Keycloak.
+   - Document platform with full-text/hybrid indexing and built-in LLM generation via streaming, with Keycloak authentication.
 
-### Modelli LLM Judge
-- **Ollama (Locale o Remoto)**: es. `gemma4:31b-cloud`, `llama3.1`, `mistral`, `qwen2.5`.
-- **Provider Cloud / OpenAI-Compatible**: supporto per OpenAI, Azure OpenAI, vLLM o server universitari via URL base e **API Key** (`Bearer` token) con fallback automatico su `ChatOpenAI`.
-
----
-
-## 💻 Requisiti di Sistema
-
-- **Python**: 3.10 o superiore (testato su Python 3.10, 3.11, 3.12 e 3.13).
-- **Ollama** (per esecuzione locale del Judge) oppure un endpoint compatibile OpenAI.
-- Connessione di rete per il download dei pesi di embedding HuggingFace (`paraphrase-multilingual-MiniLM-L12-v2`).
+### LLM Judge Models
+- **Ollama (Local or Remote)**: e.g. `gemma4:31b-cloud`, `llama3.1`, `mistral`, `qwen2.5`.
+- **Cloud / OpenAI-Compatible Providers**: support for OpenAI, Azure OpenAI, vLLM or university servers via base URL and **API Key** (`Bearer` token) with automatic fallback to `ChatOpenAI`.
 
 ---
 
-## 📦 Installazione Rapida
+## System Requirements
 
-### 1. Clonare il Repository
+- **Python**: 3.10 or higher (tested on Python 3.10, 3.11, 3.12 and 3.13).
+- **Ollama** (to run the Judge locally) or an OpenAI-compatible endpoint.
+- Network connection to download the HuggingFace embedding weights (`paraphrase-multilingual-MiniLM-L12-v2`).
+
+---
+
+## Quick Installation
+
+### 1. Clone the Repository
 ```bash
 git clone https://github.com/unimib-datAI/rag-benchmark.git
 cd SuperBenchmark
 ```
 
-### 2. Creare e Attivare l'Ambiente Virtuale
+### 2. Create and Activate the Virtual Environment
 - **Windows (PowerShell):**
   ```powershell
   python -m venv .venv
@@ -164,25 +165,25 @@ cd SuperBenchmark
   source .venv/bin/activate
   ```
 
-### 3. Installare le Dipendenze
+### 3. Install the Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Configurare le Variabili d'Ambiente (opzionale per DAVE)
-- Su Windows: `copy .env.example .env`
-- Su Linux/macOS: `cp .env.example .env`
+### 4. Configure the Environment Variables (optional, DAVE only)
+- On Windows: `copy .env.example .env`
+- On Linux/macOS: `cp .env.example .env`
 
-Modifica `.env` inserendo le credenziali Keycloak e l'URL di DAVE se intendi testare tale motore.
+Edit `.env` with the Keycloak credentials and the DAVE URL if you intend to test that engine.
 
-### 5. Scaricare i Benchmark
-I dataset grezzi non sono inclusi nel repository. Nel tab **📚 Catalogue** della dashboard si spuntano nella tabella i benchmark desiderati e il pulsante **Download selected** scarica dalle fonti ufficiali (GitHub, Hugging Face, Dropbox) solo i file usati dagli script di estrazione dei benchmark scelti (~1 GB per tutti, compreso il corpus OCR di OHRBench) e li salva in `Benchmarks_download.zip` nella cartella del progetto. In alternativa, da terminale (senza argomenti scarica tutti; altrimenti i nomi dei benchmark, es. `SQuAD-it CRAG`):
+### 5. Download the Benchmarks
+The raw datasets are not included in the repository. In the **Catalogue** tab of the dashboard, tick the desired benchmarks in the table and the **Download selected** button downloads from the official sources (GitHub, Hugging Face, Dropbox) only the files used by the extraction scripts of the chosen benchmarks (~1 GB for all of them, including the OHRBench OCR corpus) and saves them in `Benchmarks_download.zip` in the project folder. Alternatively, from the terminal (with no arguments it downloads all of them; otherwise pass the benchmark names, e.g. `SQuAD-it CRAG`):
 
 ```bash
 python webpage/benchmark_download.py
 ```
 
-Estrai lo zip nella cartella del progetto (crea `Benchmarks/` con la struttura attesa), poi genera i file JSONL:
+Extract the zip in the project folder (this creates `Benchmarks/` with the expected structure), then generate the JSONL files:
 
 ```bash
 python Run/extract_legalbenchmark.py
@@ -195,110 +196,110 @@ python Run/extract_squad.py
 
 ---
 
-## 🖥️ Guida all'Uso
+## Usage Guide
 
-### Opzione A: Dashboard Web (Streamlit)
+### Option A: Web Dashboard (Streamlit)
 
-La dashboard grafica offre il massimo livello di controllo e analisi visiva:
+The graphical dashboard offers the highest level of control and visual analysis:
 
 ```bash
 streamlit run webpage/app.py
 ```
 
-La dashboard si avvierà nel browser (di default su `http://localhost:8501`) e comprende cinque tab (Catalogue, Evaluation, Explore, Setup, API Guide); all'apertura si trova sul tab Evaluation:
+The dashboard starts in the browser (by default at `http://localhost:8501`) and has five tabs (Catalogue, Evaluation, Explore, Setup, API Guide); when opened it lands on the Evaluation tab:
 
-#### 1. Tab "📚 Catalogue"
-- Tabella di **tutti i benchmark supportati** con descrizione, stato (scaricato o no) e numero di query. La barra di ricerca filtra per **nome o descrizione** (non per contenuto).
-- Si spuntano i benchmark da scaricare: **Download selected** scarica i dati grezzi solo dei benchmark scelti e ne genera automaticamente i file di query.
-- **Clear downloaded files** (expander in fondo al tab) riparte da zero con i file locali dei dataset: elimina i benchmark scaricati (`Benchmarks/`) e i file di query e i corpora preparati (`Run/`). Non tocca gli script `Run/extract_*.py` né ciò che è stato indicizzato. Richiede una conferma e non parte se c'è un download, un'estrazione o un caricamento in corso.
+#### 1. "Catalogue" Tab
+- Table of **all supported benchmarks** with description, status (downloaded or not) and number of queries. The search bar filters by **name or description** (not by content).
+- Tick the benchmarks to download: **Download selected** downloads the raw data of the chosen benchmarks only and automatically generates their query files.
+- **Clear downloaded files** (expander at the bottom of the tab) starts over from scratch with the local dataset files: it deletes the downloaded benchmarks (`Benchmarks/`) and the prepared query files and corpora (`Run/`). It does not touch the `Run/extract_*.py` scripts or anything that has been indexed. It requires confirmation and does not start if a download, extraction or upload is in progress.
 
-#### 2. Tab "🔬 Evaluation"
-- **Configurazione Sidebar:**
-  - Scelta del motore RAG (*Local RAG* o *DAVE*).
-  - Impostazione dell'URL base.
-  - Configurazione dell'LLM Judge (URL Ollama/OpenAI e API Key facoltativa).
-  - Selezione mirata dei benchmark e delle metriche RAGAS da calcolare.
-  - **Richieste in parallelo (Workers):** slider da 1 a 10 per velocizzare sensibilmente il calcolo delle metriche RAGAS.
-  - **Modalità di selezione query:**
-    - `Random`: campionamento casuale.
-    - `Fixed`: selezione deterministica dei primi $N$ campioni.
-    - `Repeat Previous`: ripete le stesse identiche query del test precedente per confronti A/B rigorosi.
-  - **Nome della valutazione:** campo obbligatorio per tracciare il run.
-- **Monitoraggio Live:** barra di avanzamento e metriche live di throughput (**Tokens Per Second - TPS**, token totali, input/output).
-- **Report & Risultati:**
-  - Card riassuntive delle metriche medie con codifica cromatica.
-  - Barra riassuntiva dei verdetti e distribuzione dei pattern di errore.
-  - Dettaglio per singola query espandibile con verdetto, motivazione diagnostica, prompt/risposta RAG, gold answer e contesto recuperato.
-  - Diagnostica euristica avanzata complessiva.
+#### 2. "Evaluation" Tab
+- **Sidebar Configuration:**
+  - RAG engine choice (*Local RAG* or *DAVE*).
+  - Base URL setting.
+  - LLM Judge configuration (Ollama/OpenAI URL and optional API Key).
+  - Targeted selection of the benchmarks and RAGAS metrics to compute.
+  - **Parallel requests (Workers):** slider from 1 to 10 to noticeably speed up the computation of the RAGAS metrics.
+  - **Query selection mode:**
+    - `Random`: random sampling.
+    - `Fixed`: deterministic selection of the first $N$ samples.
+    - `Repeat Previous`: repeats the exact same queries of the previous test for rigorous A/B comparisons.
+  - **Evaluation name:** required field to track the run.
+- **Live Monitoring:** progress bar and live throughput metrics (**Tokens Per Second - TPS**, total tokens, input/output).
+- **Reports & Results:**
+  - Summary cards of the average metrics with color coding.
+  - Summary bar of the verdicts and distribution of the error patterns.
+  - Expandable per-query detail with verdict, diagnostic reasoning, RAG prompt/answer, gold answer and retrieved context.
+  - Overall advanced heuristic diagnostics.
 
-#### 3. Tab "📊 Explore"
-- Consulta lo storico di tutte le esecuzioni salvate in `valutazioni/`.
-- **Confronto Multi-Run:** seleziona due o più valutazioni per visualizzare **Radar Chart comparativi** e tabelle di variazione percentuale ($\Delta$).
-- Riconoscimento immediato del run con le prestazioni migliori con badge di merito.
-- Cancellazione o ricaricamento di valutazioni archiviate con un click.
+#### 3. "Explore" Tab
+- Browse the history of all runs saved in `valutazioni/`.
+- **Multi-Run Comparison:** select two or more evaluations to view **comparative Radar Charts** and percentage-change tables ($\Delta$).
+- Instant recognition of the best-performing run through a merit badge.
+- Delete or reload archived evaluations with one click.
 
-#### 4. Tab "🛠️ Setup"
-- Connessione a DAVE e indicizzazione del corpus, oppure caricamento del corpus su un RAG generico (`POST /ingest`).
-- Si possono indicizzare **solo i benchmark scaricati** dal tab Catalogue: gli altri non compaiono nelle tabelle di caricamento.
-- Impostazioni di batch (documenti e MB per richiesta, pausa, numero massimo di documenti) e pannello con avanzamento e log del job.
-- **Clear index** (un expander in ciascuna delle due schede) cancella solo i registri di ciò che è stato indicizzato: quello del RAG generico in una scheda, quello di DAVE (collezioni, file caricati, job) nell'altra. Non tocca i file scaricati e non invia nulla ai sistemi remoti: le collezioni DAVE già create restano lì, inutilizzate, e un nuovo caricamento ne crea di nuove.
+#### 4. "Setup" Tab
+- Connect to DAVE and index the corpus, or upload the corpus to a generic RAG (`POST /ingest`).
+- Only the benchmarks **downloaded** from the Catalogue tab can be indexed: the others do not appear in the upload tables.
+- Batch settings (documents and MB per request, pause, maximum number of documents) and a panel with progress and job log.
+- **Clear index** (an expander in each of the two sections) deletes only the records of what has been indexed: the generic RAG one in one section, the DAVE one (collections, uploaded files, jobs) in the other. It does not touch the downloaded files and sends nothing to remote systems: DAVE collections already created stay there, unused, and a new upload creates new ones.
 
-#### 5. Tab "📖 API Guide"
-- Descrive le route `/ask` e `/ingest` che un RAG di terze parti deve esporre.
+#### 5. "API Guide" Tab
+- Describes the `/ask` and `/ingest` routes that a third-party RAG must expose.
 
 ---
 
-### Opzione B: Interfaccia CLI da Terminale
+### Option B: Terminal CLI
 
-SuperRagBench include una CLI completa (`webpage/cli.py`) perfettamente allineata con tutte le funzionalità della dashboard, ideale per automazioni, script batch ed esecuzioni headless.
+SuperRagBench includes a complete CLI (`webpage/cli.py`) fully aligned with all the dashboard features, ideal for automation, batch scripts and headless runs.
 
-#### 1. Modalità Interattiva (Menù Guidato)
+#### 1. Interactive Mode (Guided Menu)
 ```bash
 python webpage/cli.py
 ```
-Mostra un menù interattivo a terminale che propone i valori predefiniti da `config.json` e consente di personalizzare ogni parametro prima dell'avvio.
+Shows an interactive terminal menu that proposes the default values from `config.json` and lets you customize every parameter before starting.
 
-#### 2. Modalità Batch / Headless (CI/CD)
-Tutti i parametri possono essere passati direttamente come argomenti da linea di comando:
+#### 2. Batch / Headless Mode (CI/CD)
+All parameters can be passed directly as command-line arguments:
 
 ```bash
-# Esecuzione completa automatizzata con output su file
+# Fully automated run with output to file
 python webpage/cli.py --name "exp_llama3_run1" --engine "Local" --sample 5 --benchmarks SQUAD,LEGALBENCH --workers 4
 
-# Esecuzione su DAVE saltando l'ingestion preliminare
+# Run on DAVE skipping the preliminary ingestion
 python webpage/cli.py --name "test_dave_batch" --engine "DAVE" --sample 10 --no-ingest
 
-# Utilizzo di un modello OpenAI/Cloud compatibile
+# Using an OpenAI/Cloud-compatible model
 python webpage/cli.py --name "gpt4o_judge" --judge-url "https://api.openai.com/v1" --model "gpt-4o-mini" --api-key "sk-..."
 
-# Consultazione rapida dello storico delle valutazioni salvate
+# Quick look at the history of saved evaluations
 python webpage/cli.py --list
 ```
 
-#### Argomenti CLI Supportati
+#### Supported CLI Arguments
 
-| Parametro | Descrizione | Default / Valori |
+| Parameter | Description | Default / Values |
 | :--- | :--- | :--- |
-| `--name` | Nome identificativo della valutazione | `cli_run_YYYYMMDD_HHMMSS` |
-| `--engine` | Motore RAG target | `'Local'` oppure `'DAVE'` |
-| `--endpoint` | URL base del server RAG | Valore da `config.json` |
-| `--judge-url` | Endpoint dell'LLM Judge | `http://localhost:11434` |
-| `--model` | Modello LLM Judge | `gemma4:31b-cloud` |
-| `--api-key` | API Key per endpoint cloud / OpenAI | `""` |
-| `--benchmarks` | Elenco benchmark separati da virgola o `ALL` | `ALL` (`LEGALBENCH,MULTIHOP,CRAG,MTRAG,OHRBENCH,SQUAD`) |
-| `--sample` | Numero di query per ciascun benchmark | `3` |
-| `--mode` | Modalità campionamento (`Random`, `Fixed`, `Repeat`) | `Random` |
-| `--workers` | Numero di worker paralleli per RAGAS (1-10) | `2` |
-| `--no-ingest` | Salta la fase di ingestion documenti preliminare | Flag booleano |
-| `--list` | Stampa l'elenco delle valutazioni salvate ed esce | Flag booleano |
-| `--interactive`| Forza l'apertura del menù interattivo guidato | Flag booleano |
+| `--name` | Identifying name of the evaluation | `cli_run_YYYYMMDD_HHMMSS` |
+| `--engine` | Target RAG engine | `'Local'` or `'DAVE'` |
+| `--endpoint` | Base URL of the RAG server | Value from `config.json` |
+| `--judge-url` | LLM Judge endpoint | `http://localhost:11434` |
+| `--model` | LLM Judge model | `gemma4:31b-cloud` |
+| `--api-key` | API Key for cloud / OpenAI endpoints | `""` |
+| `--benchmarks` | Comma-separated list of benchmarks or `ALL` | `ALL` (`LEGALBENCH,MULTIHOP,CRAG,MTRAG,OHRBENCH,SQUAD`) |
+| `--sample` | Number of queries per benchmark | `3` |
+| `--mode` | Sampling mode (`Random`, `Fixed`, `Repeat`) | `Random` |
+| `--workers` | Number of parallel RAGAS workers (1-10) | `2` |
+| `--no-ingest` | Skips the preliminary document ingestion phase | Boolean flag |
+| `--list` | Prints the list of saved evaluations and exits | Boolean flag |
+| `--interactive`| Forces the guided interactive menu to open | Boolean flag |
 
 ---
 
-## ⚙️ Configurazione
+## Configuration
 
-### File `config.json`
-Conserva le impostazioni di default condivise da CLI e Web Dashboard:
+### `config.json` File
+Stores the default settings shared by the CLI and the Web Dashboard:
 
 ```json
 {
@@ -313,53 +314,53 @@ Conserva le impostazioni di default condivise da CLI e Web Dashboard:
 }
 ```
 
-### File `.env` (Credenziali DAVE)
-Contiene le credenziali per l'interazione con l'istanza DAVE:
+### `.env` File (DAVE Credentials)
+Contains the credentials to interact with the DAVE instance:
 ```env
 DAVE_BASE_URL=https://vm.chronos.disco.unimib.it
-DAVE_USERNAME=il_tuo_username
-DAVE_PASSWORD=la_tua_password
-DAVE_CLIENT_SECRET=il_tuo_secret
+DAVE_USERNAME=your_username
+DAVE_PASSWORD=your_password
+DAVE_CLIENT_SECRET=your_secret
 ```
 
 ---
 
-## 🔗 Collegare il proprio RAG
+## Connecting Your Own RAG
 
-Per valutare il proprio sistema con il motore **Local RAG**, il server deve esporre **due endpoint HTTP** sotto lo stesso Base URL (campo *Base URL RAG* della dashboard, `--endpoint` da CLI, es. `http://127.0.0.1:8000`):
+To evaluate your own system with the **Local RAG** engine, the server must expose **two HTTP endpoints** under the same Base URL (the *Base URL RAG* field of the dashboard, `--endpoint` from the CLI, e.g. `http://127.0.0.1:8000`):
 
-| Endpoint | A cosa serve |
+| Endpoint | Purpose |
 | :--- | :--- |
-| `POST /ingest` | Controllare quali documenti del corpus mancano e caricarli nell'indice del RAG |
-| `POST /ask` | Rispondere a una domanda restituendo la risposta e i documenti recuperati |
+| `POST /ingest` | Check which corpus documents are missing and load them into the RAG index |
+| `POST /ask` | Answer a question, returning the answer and the retrieved documents |
 
-### Flusso di una valutazione
+### Evaluation Flow
 
-Per ogni benchmark selezionato, prima di porre le domande:
+For each selected benchmark, before asking the questions:
 
-1. SuperRagBench legge il **corpus completo** del benchmark (lo stesso caricato su DAVE da `ingest_dave.py`), non i soli documenti gold:
+1. SuperRagBench reads the benchmark's **full corpus** (the same one loaded on DAVE by `ingest_dave.py`), not just the gold documents:
 
-   | Benchmark | Corpus indicizzato |
+   | Benchmark | Indexed corpus |
    | :--- | :--- |
    | MultiHop-RAG | `Benchmarks/MultiHop-RAG/dataset/corpus.json` |
    | MTRAG | `Benchmarks/mt-rag-benchmark/corpora/document_level/*.jsonl` |
    | LegalBench-RAG | `Benchmarks/legalbenchrag/data/corpus/` |
    | SQuAD-it | `Run/squad_corpus.json` |
-   | OHRBench | `Benchmarks/OHR-Bench/data/retrieval_base/semantic_noise_MinerU_moderate/` (una pagina PDF per documento, testo con rumore OCR) |
-   | CRAG | Pagine web fornite dal benchmark per ogni domanda (campo `context` di `Run/Tutto_CRAG_DAVE.jsonl`), come **HTML grezzo**: estrarre l'informazione dal codice web è compito del RAG |
+   | OHRBench | `Benchmarks/OHR-Bench/data/retrieval_base/semantic_noise_MinerU_moderate/` (one PDF page per document, text with OCR noise) |
+   | CRAG | Web pages provided by the benchmark for each question (`context` field of `Run/Tutto_CRAG_DAVE.jsonl`), as **raw HTML**: extracting the information from the web code is the RAG's job |
 
-   I documenti più lunghi di 500.000 caratteri vengono divisi in parti (`<id>_part2`, `<id>_part3`, …), lo stesso limite usato per DAVE.
+   Documents longer than 500,000 characters are split into parts (`<id>_part2`, `<id>_part3`, …), the same limit used for DAVE.
 
-   Se il corpus non è stato scaricato, la valutazione si ferma con un errore (vedi [Scaricare i Benchmark](#5-scaricare-i-benchmark)).
-2. Chiede a `/ingest` quali documenti mancano nell'indice (`check_only`).
-3. Se non manca nulla passa subito alla valutazione; altrimenti invia **solo i documenti mancanti**, a lotti (max 500 documenti o 20 MB per richiesta).
-4. Esegue una chiamata `/ask` per ogni domanda.
+   If the corpus has not been downloaded, the evaluation stops with an error (see [Download the Benchmarks](#5-download-the-benchmarks)).
+2. It asks `/ingest` which documents are missing from the index (`check_only`).
+3. If nothing is missing it moves straight to the evaluation; otherwise it sends **only the missing documents**, in batches (max 500 documents or 20 MB per request).
+4. It makes one `/ask` call for each question.
 
-Da CLI l'ingestion si può saltare con `--no-ingest`.
+From the CLI the ingestion can be skipped with `--no-ingest`.
 
-### `POST /ingest` — controllo dei documenti presenti
+### `POST /ingest` — checking which documents are present
 
-Richiesta:
+Request:
 ```json
 {
   "benchmark_name": "MTRAG",
@@ -368,15 +369,15 @@ Richiesta:
   "ids": ["827849752_115-357", "ibmcld_00001", "..."]
 }
 ```
-Risposta attesa: gli `id` ricevuti che **non** sono ancora nell'indice di quel `benchmark_name`.
+Expected response: the received `id`s that are **not** yet in the index of that `benchmark_name`.
 ```json
 { "missing": ["ibmcld_00001"] }
 ```
-Con `"missing": []` (oppure `{"complete": true}`) l'ingestion del benchmark viene saltata. Un server che non gestisce `check_only` riceve l'intero corpus a ogni valutazione.
+With `"missing": []` (or `{"complete": true}`) the benchmark's ingestion is skipped. A server that does not handle `check_only` receives the entire corpus at every evaluation.
 
-### `POST /ingest` — caricamento dei documenti
+### `POST /ingest` — uploading documents
 
-Richiesta (una per lotto):
+Request (one per batch):
 ```json
 {
   "benchmark_name": "MTRAG",
@@ -385,114 +386,200 @@ Richiesta (una per lotto):
   ]
 }
 ```
-Il server deve rispondere `200` e **aggiungere** i documenti all'indice esistente di quel `benchmark_name`, ignorando gli `id` già presenti. Arrivano più richieste per lo stesso benchmark: un `/ingest` che ricrea l'indice a ogni chiamata conserverebbe solo l'ultimo lotto. Una risposta diversa da `200` (o un errore di rete) durante il caricamento **ferma la valutazione** con un errore, per non valutare il RAG su un indice incompleto: alla valutazione successiva il caricamento riprende dai documenti mancanti.
+The server must respond `200` and **add** the documents to the existing index of that `benchmark_name`, ignoring `id`s that are already present. Several requests arrive for the same benchmark: an `/ingest` that recreates the index on every call would keep only the last batch. A response other than `200` (or a network error) during upload **stops the evaluation** with an error, to avoid evaluating the RAG on an incomplete index: at the next evaluation the upload resumes from the missing documents.
 
-### `POST /ask` — risposta a una domanda
+### `POST /ask` — answering a question
 
-Richiesta:
+Request:
 ```json
 {
   "question": "Who is ...?",
   "top_k": 10,
   "benchmark_name": "MultiHop-RAG",
   "search_query": "Who is ...?",
-  "documents": ["testo documento 1", "testo documento 2"]
+  "documents": ["text of document 1", "text of document 2"]
 }
 ```
-- `benchmark_name`: indice in cui cercare (lo stesso usato in `/ingest`).
-- `question`: domanda da passare al generatore. Per MTRAG contiene anche la storia della conversazione (`[HISTORY] ... [NEW QUESTION] ...`).
-- `search_query`: testo da usare per il retrieval (per MTRAG include i turni precedenti).
-- `documents` (opzionale): se presente, il RAG **non** deve fare retrieval e deve rispondere usando solo questi testi. Viene inviato per rigenerare la risposta sui soli documenti rimasti dopo il filtro di *Similarity Threshold*.
+- `benchmark_name`: index to search in (the same one used in `/ingest`).
+- `question`: question to pass to the generator. For MTRAG it also contains the conversation history (`[HISTORY] ... [NEW QUESTION] ...`).
+- `search_query`: text to use for retrieval (for MTRAG it includes the previous turns).
+- `documents` (optional): if present, the RAG must **not** do retrieval and must answer using only these texts. It is sent to regenerate the answer on only the documents remaining after the *Similarity Threshold* filter.
 
-Risposta attesa:
+Expected response:
 ```json
 {
-  "answer": "Risposta generata",
-  "contexts": ["testo del primo documento recuperato", "..."]
+  "answer": "Generated answer",
+  "contexts": ["text of the first retrieved document", "..."]
 }
 ```
-`contexts` può contenere stringhe oppure oggetti `{"text": "..."}`: sono i documenti che RAGAS usa per le metriche di retrieval e di faithfulness. In caso di errore il server risponde con uno status diverso da `200` e `{"error": "descrizione"}`. Una risposta diversa da `200`, non JSON o con `answer` mancante/vuoto non viene mai valutata come risposta: la query è marcata `RAG_ERROR` ed esclusa da RAGAS e dalle medie.
+`contexts` can contain strings or `{"text": "..."}` objects: these are the documents RAGAS uses for the retrieval and faithfulness metrics. On error the server responds with a status other than `200` and `{"error": "description"}`. A response other than `200`, non-JSON, or with a missing/empty `answer` is never evaluated as an answer: the query is marked `RAG_ERROR` and excluded from RAGAS and the averages.
 
 ---
 
-## 🔍 Integrazione con DAVE
+## DAVE Integration
 
-Se utilizzi **DAVE** come motore RAG documentale:
+If you use **DAVE** as your document RAG engine:
 
-1. **Test di Connessione e Autenticazione:**
+1. **Connection and Authentication Test:**
    ```bash
    python dave_client.py
    ```
-   Verifica l'autenticazione Keycloak e sincronizza il mapping delle collezioni in `.dave_collections.json`.
+   Verifies Keycloak authentication and syncs the collection mapping in `.dave_collections.json`.
 
-2. **Indicizzazione Massiva del Corpus:**
+2. **Bulk Corpus Indexing:**
    ```bash
    python ingest_dave.py
    ```
-   Carica su DAVE i corpus dei benchmark, un batch alla volta: il batch successivo parte solo quando DAVE ha finito di indicizzare il precedente, quindi la barra di avanzamento conta documenti davvero indicizzati e mostra tempo trascorso, tempo stimato e velocità. I file già inviati sono tracciati nella cache locale `.dave_docs_cache.json` per evitare re-upload non necessari; quelli che DAVE non riesce a indicizzare vengono rimandati (fino a 3 passate). Opzioni: `--benchmarks` (default: tutti), `--batch-docs`, `--batch-mb`, `--sleep`, `--max-docs`, `--verify` (confronta cache e DAVE senza caricare nulla), `--recreate` (crea nuove collezioni al posto di quelle esistenti; le vecchie restano su DAVE).
+   Uploads the benchmark corpora to DAVE, one batch at a time: the next batch starts only when DAVE has finished indexing the previous one, so the progress bar counts documents that are actually indexed and shows elapsed time, estimated time and speed. Files already sent are tracked in the local cache `.dave_docs_cache.json` to avoid unnecessary re-uploads; those DAVE fails to index are resent (up to 3 passes). Options: `--benchmarks` (default: all), `--batch-docs`, `--batch-mb`, `--sleep`, `--max-docs`, `--verify` (compares cache and DAVE without uploading anything), `--recreate` (creates new collections in place of the existing ones; the old ones remain on DAVE).
 
 ---
 
-## ➕ Aggiunta di un Nuovo Benchmark
+## Creating Your Own Dataset (Practical Guide)
 
-Aggiungere un nuovo dataset alla suite richiede 3 passaggi:
+A custom benchmark lets you evaluate a RAG on your own domain (internal manuals, regulations, technical documentation) instead of the bundled datasets. It consists of two separate artifacts:
 
-1. **Estrazione e Normalizzazione (`Run/extract_nome.py`):**
-   Crea uno script che trasformi il dataset grezzo in un file JSONL (`Run/Tutto_NOME.jsonl`), dove ogni riga rappresenta un record JSON valido:
+| Artifact | Role | Format |
+| :--- | :--- | :--- |
+| **Corpus** | The document collection the RAG indexes and retrieves from | One `(id, text)` pair per document, read by a function in `corpus_sources.py` |
+| **Question set** | Queries with reference answers (*gold answers*) and the supporting passages | A JSONL file, one query per line |
+
+At evaluation time the RAG only sees the questions and retrieves from the corpus. The gold answers and supporting passages are used exclusively by RAGAS to score the output: they are never sent to the RAG.
+
+> **Both parts are required.** `questions.jsonl` alone is not enough: it is never indexed. The RAG retrieves only from the files in `documents/`, while the `context` field of each question is used exclusively as a reference for scoring and is never sent to the RAG or added to the index. If `documents/` is missing or empty, the evaluation stops with a "corpus not found" error.
+
+### Folder layout
+
+Create one folder per dataset inside `Custom/`. Nothing needs to be registered in the code: every folder that contains a `questions.jsonl` is discovered automatically at startup and appears in the Evaluation tab of the dashboard and in the CLI (`--benchmarks`, using the folder name in upper case).
+
+```text
+Custom/
+└── Company Policies/              # dataset name shown in the UI
+    ├── questions.jsonl            # one query per line
+    └── documents/                 # the corpus: every .txt / .md file (subfolders included) is one document
+        ├── vacation.txt
+        ├── remote_work.txt
+        └── expenses.txt
+```
+
+The document id is the file path relative to `documents/`, so it stays stable as long as the file is not renamed.
+
+### `questions.jsonl`
+
+One JSON object per line:
+
+```json
+{"id": "pol_001", "source": "Company Policies", "query_type": "Simple_Extraction", "question": "How many vacation days is an employee entitled to?", "context": "[Doc 1] Every employee is entitled to 26 days of vacation per year.", "gold_answer": "26 days per year"}
+{"id": "pol_002", "source": "Company Policies", "query_type": "Multi_Hop", "question": "How far in advance must I request vacation, and how many remote work days can I take?", "context": "[Doc 1] Requests must be submitted 15 days in advance. [Doc 2] Remote work is allowed up to 2 days a week.", "gold_answer": "Vacation must be requested 15 days in advance; remote work is allowed up to 2 days a week."}
+{"id": "pol_003", "source": "Company Policies", "query_type": "Unanswerable", "question": "What is the daily meal voucher?", "context": "", "gold_answer": "The policies do not contain this information."}
+```
+
+Fields:
+
+- `id`: unique identifier of the query.
+- `source`: dataset name, used as the index name when the corpus is uploaded to the RAG (`benchmark_name` in `/ingest` and `/ask`). Use the same value on every line; if it is missing, the folder name is used.
+- `query_type`: free-form label used to group results by question category (e.g. single-passage vs. multi-document).
+- `question`: the query sent to the RAG.
+- `context`: the ground-truth supporting passage(s). It is **not** indexed: the passage must also exist inside a file in `documents/`, otherwise the RAG has no way to find it. It is used by RAGAS for the retrieval metrics (Context Recall in particular). Multiple passages are written as `[Doc 1] … [Doc 2] …`. Leave it empty for unanswerable questions.
+- `gold_answer`: the reference answer that Answer Correctness is computed against.
+
+### Running it
+
+Start the dashboard (`streamlit run webpage/app.py`) or the CLI (`python webpage/cli.py --benchmarks "COMPANY POLICIES"`). On a Local RAG engine the corpus is uploaded to `/ingest` automatically, exactly as for the bundled benchmarks, and only the missing documents are sent. Custom datasets are also listed in the Setup tab, where you can upload the corpus manually. They never appear in the Catalogue tab, which only handles downloadable benchmarks: there is nothing to download.
+
+### Generating the `.jsonl` file from an Excel/CSV sheet
+
+If your questions are in a CSV with the columns `question`, `answer`, `passage`, a few lines are enough:
+
+```python
+import csv, json
+
+with open("questions.csv", encoding="utf-8") as f, open("Custom/Company Policies/questions.jsonl", "w", encoding="utf-8") as out:
+    for i, r in enumerate(csv.DictReader(f), 1):
+        out.write(json.dumps({
+            "id": f"pol_{i:03d}",
+            "source": "Company Policies",
+            "query_type": "Simple_Extraction",
+            "question": r["question"],
+            "context": f"[Doc 1] {r['passage']}",
+            "gold_answer": r["answer"],
+        }, ensure_ascii=False) + "\n")
+```
+
+### Tips for a good dataset
+
+- **Concise, self-contained gold answers**: Answer Correctness compares claims between the generated and the reference answer, so a short factual statement is scored more reliably than a long paragraph.
+- **Cover different query types**: single-passage lookups, multi-document questions and unanswerable questions. The latter are the only way to measure whether the RAG hallucinates or correctly refuses.
+- **Keep the corpus larger than the supporting passages**: if only the gold documents are indexed, retrieval is trivially easy and Context Precision is inflated. Include distractor documents, ideally similar in topic to the relevant ones.
+- **Start with a small sample**: 10-20 questions are enough to validate the pipeline end to end before scaling up.
+- **Use stable document ids**: ids are used by `/ingest` to detect which documents are already indexed, so renaming files forces a full re-upload.
+
+*(For details on very large corpora, per-question documents and automatic download, see [aggiunta_dataset.md](aggiunta_dataset.md)).*
+
+---
+
+## Adding a New Benchmark
+
+Adding a new dataset to the suite takes 3 steps:
+
+1. **Extraction and Normalization (`Run/extract_name.py`):**
+   Create a script that turns the raw dataset into a JSONL file (`Run/Tutto_NAME.jsonl`), where each line is a valid JSON record:
    ```json
-   {"id": "query_001", "source": "MioBenchmark", "query_type": "Estrazione_Semplice", "question": "Testo della domanda...", "context": "[Doc 1] Contesto...", "gold_answer": "Risposta di riferimento..."}
+   {"id": "query_001", "source": "MyBenchmark", "query_type": "Simple_Extraction", "question": "Question text...", "context": "[Doc 1] Context...", "gold_answer": "Reference answer..."}
    ```
-2. **Registrazione nella Dashboard:**
-   In `webpage/app.py`, aggiungi la voce in `BENCHMARK_MAPPING`:
+2. **Registration in the Dashboard:**
+   In `webpage/app.py`, add the entry to `BENCHMARK_MAPPING`:
    ```python
-   BENCHMARK_MAPPING["MioBenchmark"] = "Tutto_NOME.jsonl"
+   BENCHMARK_MAPPING["MyBenchmark"] = "Tutto_NAME.jsonl"
    ```
-3. **Registrazione nella CLI:**
-   In `webpage/cli.py`, inserisci la chiave corrispondente in `BENCHMARK_MAP`.
+3. **Registration in the CLI:**
+   In `webpage/cli.py`, insert the corresponding key in `BENCHMARK_MAP`.
 
-*(Per la guida passo-passo dettagliata e l'indicizzazione su DAVE, consulta [aggiunta_dataset.md](aggiunta_dataset.md)).*
+*(For the detailed step-by-step guide and indexing on DAVE, see [aggiunta_dataset.md](aggiunta_dataset.md)).*
 
 ---
 
-## 📂 Struttura del Progetto
+## Project Structure
 
 ```text
 SuperRagBench/
-├── README.md                      # Documentazione generale del progetto
-├── requirements.txt               # Dipendenze Python (Streamlit, RAGAS, LangChain, ecc.)
-├── config.json                    # Configurazione predefinita per UI e CLI
-├── .env.example                   # Template delle variabili d'ambiente DAVE/Keycloak
-├── dave_client.py                 # Client API per motore DAVE (tRPC, sessioni e streaming)
-├── ingest_dave.py                 # Script per caricamento e indicizzazione corpus su DAVE
-├── corpus_sources.py              # Corpus di ogni benchmark, condiviso da RAG locale e DAVE
-├── .dave_collections.json         # Mapping benchmark -> UUID collezioni DAVE
-├── .dave_docs_cache.json          # Cache locale per tracciamento documenti già indicizzati
-├── .dave_upload_jobs.json         # Job di upload DAVE da verificare (file falliti da ricaricare)
+├── README.md                      # General project documentation
+├── requirements.txt               # Python dependencies (Streamlit, RAGAS, LangChain, etc.)
+├── config.json                    # Default configuration for UI and CLI
+├── .env.example                   # Template of the DAVE/Keycloak environment variables
+├── dave_client.py                 # API client for the DAVE engine (tRPC, sessions and streaming)
+├── ingest_dave.py                 # Script to upload and index the corpus on DAVE
+├── corpus_sources.py              # Corpus of each benchmark, shared by the local RAG and DAVE
+├── .dave_collections.json         # Benchmark -> DAVE collection UUID mapping
+├── .dave_docs_cache.json          # Local cache tracking already indexed documents
+├── .dave_upload_jobs.json         # DAVE upload jobs to verify (failed files to re-upload)
 │
-├── webpage/                       # Core dell'applicazione (Dashboard e CLI)
-│   ├── app.py                     # Interfaccia web Streamlit (Evaluation ed Explore)
-│   ├── cli.py                     # Interfaccia a riga di comando (Interattiva e Batch)
-│   ├── evaluator.py               # Motore di valutazione, query ai RAG e calcolo RAGAS
-│   ├── taxonomy.py                # Tassonomia errori: verdetti, pattern, cause e diagnostica aggregata
-│   ├── persistence.py             # Gestione salvataggio, caricamento ed eliminazione run
-│   ├── benchmark_download.py      # Download dei benchmark grezzi dalle fonti ufficiali (zip)
-│   ├── dashboard.py               # Componenti grafici HTML/CSS, card metriche e leggende errori
-│   └── style.css                  # Foglio di stile personalizzato dark-mode per Streamlit
+├── webpage/                       # Application core (Dashboard and CLI)
+│   ├── app.py                     # Streamlit web interface (Evaluation and Explore)
+│   ├── cli.py                     # Command-line interface (Interactive and Batch)
+│   ├── evaluator.py               # Evaluation engine, RAG queries and RAGAS computation
+│   ├── taxonomy.py                # Error taxonomy: verdicts, patterns, causes and aggregate diagnostics
+│   ├── persistence.py             # Saving, loading and deleting runs
+│   ├── benchmark_download.py      # Download of raw benchmarks from the official sources (zip)
+│   ├── dashboard.py               # HTML/CSS graphical components, metric cards and error legends
+│   └── style.css                  # Custom dark-mode stylesheet for Streamlit
 │
-├── Run/                           # Dataset normalizzati e script di estrazione
-│   ├── Tutto_LEGALBENCH.jsonl     # LegalBench-RAG in formato JSONL
-│   ├── Tutto_MULTIHOP.jsonl       # MultiHop-RAG in formato JSONL
-│   ├── Tutto_CRAG_DAVE.jsonl      # CRAG (Meta) in formato JSONL
-│   ├── Tutto_MTRAG_DAVE.jsonl     # MTRAG conversazionale in formato JSONL
-│   ├── Tutto_OHRBench_DAVE.jsonl  # OHRBench (OCR noise) in formato JSONL
-│   ├── Tutto_SQUAD.jsonl          # SQuAD-it in formato JSONL
-│   ├── squad_corpus.json          # Corpus di SQuAD-it (paragrafi unici), generato da extract_squad.py
-│   └── extract_*.py               # Script di conversione dai formati grezzi a JSONL
+├── Custom/                        # Your own datasets, picked up automatically (see "Creating Your Own Dataset")
+│   └── <name>/questions.jsonl + documents/
 │
-├── test/                          # Test automatici (tassonomia, errori del RAG, pipeline DAVE)
+├── Run/                           # Normalized datasets and extraction scripts
+│   ├── Tutto_LEGALBENCH.jsonl     # LegalBench-RAG in JSONL format
+│   ├── Tutto_MULTIHOP.jsonl       # MultiHop-RAG in JSONL format
+│   ├── Tutto_CRAG_DAVE.jsonl      # CRAG (Meta) in JSONL format
+│   ├── Tutto_MTRAG_DAVE.jsonl     # Conversational MTRAG in JSONL format
+│   ├── Tutto_OHRBench_DAVE.jsonl  # OHRBench (OCR noise) in JSONL format
+│   ├── Tutto_SQUAD.jsonl          # SQuAD-it in JSONL format
+│   ├── squad_corpus.json          # SQuAD-it corpus (unique paragraphs), generated by extract_squad.py
+│   └── extract_*.py               # Scripts converting raw formats to JSONL
 │
-├── Benchmarks/                    # Dataset grezzi originali (non versionati, vedi "Scaricare i Benchmark")
-├── valutazioni/                   # Report JSON archiviati con i risultati di ciascuna sessione
-├── Paper/                         # Pubblicazioni scientifiche di riferimento sui dataset e su RAGAS
-└── aggiunta_dataset.md            # Guida dettagliata per integrare nuovi dataset
+├── test/                          # Automated tests (taxonomy, RAG errors, DAVE pipeline)
+│
+├── Benchmarks/                    # Original raw datasets (not versioned, see "Download the Benchmarks")
+├── valutazioni/                   # Archived JSON reports with the results of each session
+├── Paper/                         # Reference scientific publications on the datasets and on RAGAS
+└── aggiunta_dataset.md            # Detailed guide to integrate new datasets
 ```
