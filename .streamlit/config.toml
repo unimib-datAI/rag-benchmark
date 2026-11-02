@@ -1,0 +1,3 @@
+[server]
+# compress the page data sent to the browser: the results pages are large and mostly text
+enableWebsocketCompression = true

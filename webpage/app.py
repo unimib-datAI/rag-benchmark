@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import random
 from html import escape
@@ -16,7 +17,7 @@ from pathlib import Path
 
 from evaluator import run_evaluation, build_judge_llm, classify_query_verdict, FETCH_K
 from taxonomy import metric_mean, metric_value, needs_reclassification
-from persistence import save_evaluation, list_evaluations, load_evaluation, delete_evaluation, set_expert_report
+from persistence import save_evaluation, list_evaluations, load_evaluation, delete_evaluation, set_expert_report, EVAL_DIR
 import api_guide
 import answerable
 import ingest_http
@@ -45,6 +46,9 @@ else:
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 RUN_DIR = ROOT_DIR / "Run"
+
+# Query Details shows this many queries at a time: every click rebuilds the whole page
+QUERY_DETAILS_PAGE_SIZE = 20
 
 # benchmark names mapping -> json files in Run folder
 BENCHMARK_MAPPING = {
@@ -134,6 +138,22 @@ BENCHMARK_SHORT = {
     "OHRBench": "OHRBench",
     "SQuAD-it": "SQuAD",
 }
+
+@st.cache_data(max_entries=1, show_spinner=False)
+def _cached_evaluations(signature):
+    return list_evaluations()
+
+
+def _first_query_page():
+    """A new filter on Query Details starts again from its first page."""
+    st.session_state.query_details_page = 1
+
+
+def saved_evaluations():
+    """Saved evaluations, read from disk again only when a file in valutazioni/ is added, removed or changed."""
+    signature = tuple((f.name, f.stat().st_mtime_ns) for f in sorted(EVAL_DIR.glob("*.json")))
+    return _cached_evaluations(signature)
+
 
 def _load_benchmark_jsonl(path, skip_context=True):
     """Load a JSONL benchmark file line-by-line, optionally skipping the context field to save memory."""
@@ -427,7 +447,7 @@ with st.sidebar:
 
 # if there are no current results, load the last saved evaluation
 if not st.session_state.running and not st.session_state.results:
-    saved_evals = list_evaluations()
+    saved_evals = saved_evaluations()
     if saved_evals:
         last_eval = saved_evals[0]
         _open_evaluation(load_evaluation(last_eval["filepath"]))
@@ -452,7 +472,7 @@ with tab_evaluation:
 
         previous_eval_ids = set()
         if st.session_state.get("query_selection_mode") == "Repeat Previous":
-            saved_evals = list_evaluations()
+            saved_evals = saved_evaluations()
             if saved_evals:
                 last_eval = load_evaluation(saved_evals[0]["filepath"])
                 for res in last_eval.get("results", []):
@@ -726,22 +746,34 @@ with tab_evaluation:
         all_verdicts = sorted(list({r.get('verdict_label', '') for r in reports if r.get('verdict_label')}))
         all_patterns = sorted(list({r.get('error_pattern_label', '') for r in reports if r.get('error_pattern_label')}))
         
-        col_f1, col_f2 = st.columns(2)
+        col_f1, col_f2, col_page = st.columns([2, 2, 1])
         with col_f1:
-            filter_verdict = st.multiselect("Filter by Verdict", options=all_verdicts, default=[], placeholder="All verdicts")
+            filter_verdict = st.multiselect("Filter by Verdict", options=all_verdicts, default=[], placeholder="All verdicts",
+                                            on_change=_first_query_page)
         with col_f2:
-            filter_pattern = st.multiselect("Filter by Error Pattern", options=all_patterns, default=[], placeholder="All patterns")
-            
+            filter_pattern = st.multiselect("Filter by Error Pattern", options=all_patterns, default=[], placeholder="All patterns",
+                                            on_change=_first_query_page)
+
         filtered_reports = reports
         if filter_verdict:
             filtered_reports = [r for r in filtered_reports if r.get('verdict_label') in filter_verdict]
         if filter_pattern:
             filtered_reports = [r for r in filtered_reports if r.get('error_pattern_label') in filter_pattern]
 
+        pages = max(1, math.ceil(len(filtered_reports) / QUERY_DETAILS_PAGE_SIZE))
+        if st.session_state.get("query_details_page", 1) > pages:
+            st.session_state.query_details_page = pages  # fewer queries than before (another evaluation opened)
+        with col_page:
+            page = st.number_input("Page", min_value=1, max_value=pages, key="query_details_page")
+        first = (page - 1) * QUERY_DETAILS_PAGE_SIZE
+        page_reports = filtered_reports[first:first + QUERY_DETAILS_PAGE_SIZE]
+
         if not filtered_reports:
             st.info("No query matches the selected filters.")
-            
-        for rep in filtered_reports:
+        else:
+            st.caption(f"Queries {first + 1}–{first + len(page_reports)} of {len(filtered_reports)} · page {page} of {pages}")
+
+        for rep in page_reports:
             corr = metric_value(rep, 'correctness_voto')
             v_label = rep.get('verdict_label', '')
             pattern = rep.get('error_pattern_label', '')
@@ -890,7 +922,7 @@ with tab_explore:
         st.success(st.session_state.explore_msg)
         del st.session_state.explore_msg
 
-    saved_evals = list_evaluations()
+    saved_evals = saved_evaluations()
 
     # saved evaluations list
     st.markdown('<div class="section-title">Saved Evaluations</div>', unsafe_allow_html=True)
@@ -958,7 +990,7 @@ with tab_explore:
                     st.rerun()
 
         # evaluation comparison
-        st.markdown('<div class="section-title">Evaluation Comparison</div>', unsafe_allow_html=True)
+       # st.markdown('<div class="section-title">Evaluation Comparison</div>', unsafe_allow_html=True)
 
         if len(selected_for_compare) == 0:
             st.info("Select one or more evaluations to compare them.")
