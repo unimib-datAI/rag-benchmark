@@ -8,7 +8,7 @@ from collections import Counter
 
 # bump when rules, thresholds or pattern ids change: saved evaluations
 # with a different version are reclassified when loaded
-TAXONOMY_VERSION = 6
+TAXONOMY_VERSION = 7
 
 THRESHOLDS = {
     "correct": 0.70,  # Answer Correctness >= correct -> CORRECT
@@ -218,10 +218,7 @@ def classify_query_verdict(report: dict) -> dict:
     reason = PATTERNS[pattern][1]
     if cause and cause != pattern:
         reason += f" Likely cause — {PATTERNS[cause][0]}: {PATTERNS[cause][1]}"
-    if corr is not None:
-        fmt = lambda v: "n/a" if v is None else f"{v:.2f}"
-        reason += (f" (Correctness: {fmt(corr)}, Precision: {fmt(prec)}, Recall: {fmt(recall)}, "
-                   f"Faithfulness: {fmt(faith)}, Relevancy: {fmt(relevancy)})")
+    # the scores are not repeated here: the verdict card shows them next to the reason
 
     return {
         "verdict": verdict,

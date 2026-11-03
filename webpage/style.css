@@ -179,42 +179,6 @@ html, body, [class*="css"] {
 .yellow, .c-yellow { color: #FFC400; text-shadow: 0 0 10px rgba(255, 196, 0, 0.3); }
 .red, .c-red { color: #FF1744; text-shadow: 0 0 10px rgba(255, 23, 68, 0.3); }
 
-/* ── Dettagli Giudice LLM ── */
-.judge-box {
-    background: #1a1a24;
-    border: 1px solid #2d2d3f;
-    border-radius: 8px;
-    padding: 1.2rem;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-}
-
-.judge-box .jb-label {
-    font-size: 0.8rem;
-    color: #8b8b9e;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 0.5rem;
-}
-
-.judge-box .jb-value {
-    font-size: 1.5rem;
-    font-weight: 800;
-    font-family: 'JetBrains Mono', monospace;
-    margin-bottom: 0.8rem;
-}
-
-.judge-box .jb-reason {
-    font-size: 0.9rem;
-    color: #cfcfd6;
-    line-height: 1.4;
-    font-style: italic;
-    border-top: 1px dashed #2d2d3f;
-    padding-top: 0.8rem;
-    margin-top: auto;
-}
-
 /* ── Barra Token ── */
 .token-bar {
     background: rgba(0, 0, 0, 0.3);
@@ -551,6 +515,58 @@ button[kind="primary"]:active {
     color: #cfcfd6;
     font-size: 0.92rem;
     line-height: 1.55;
+}
+
+/* ── Scores in the verdict card ── */
+.verdict-metrics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 0.7rem;
+}
+
+.verdict-metric {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 3px 9px;
+    font-size: 0.8rem;
+    color: #a2a2c0;
+}
+
+.verdict-metric strong {
+    font-weight: 600;
+}
+
+/* top score among the compared evaluations */
+.verdict-metric.best {
+    border-color: rgba(255, 255, 255, 0.35);
+}
+
+.verdict-metric.best strong {
+    font-weight: 800;
+}
+
+/* ── Text cards: question, gold answer, RAG answer ── */
+.text-card {
+    border-radius: 10px;
+    padding: 1rem 1.4rem;
+    margin-bottom: 0.8rem;
+}
+
+.text-card-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 0.5rem;
+}
+
+.text-card-body {
+    color: #e0e0e0;
+    font-size: 0.95rem;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
 }
 
 /* ==========================================================================

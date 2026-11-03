@@ -1,3 +1,4 @@
+import re
 from collections import Counter
 from html import escape
 
@@ -44,13 +45,23 @@ def get_breakdown_card_html(src_name: str, score: float, count: int, color_class
         <div class="src-count">{count} queries</div>
     </div>"""
 
-def get_judge_box_html(metric_label: str, v: float, reason: str, color_class: str) -> str:
-    return f"""
-    <div class="judge-box">
-        <div class="jb-label">{escape(metric_label)}</div>
-        <div class="jb-value c-{color_class}">{escape(str(v))}</div>
-        <div class="jb-reason">{escape(reason)}</div>
-    </div>"""
+# kind of text card -> (label colour, background, border)
+TEXT_CARD_COLORS = {
+    "question": ('#a2a2c0', 'rgba(255, 255, 255, 0.03)', 'rgba(255, 255, 255, 0.08)'),
+    "gold":     ('#00E676', 'rgba(0, 230, 118, 0.06)',   'rgba(0, 230, 118, 0.20)'),
+    "answer":   ('#00B0FF', 'rgba(0, 176, 255, 0.06)',   'rgba(0, 176, 255, 0.20)'),
+    "error":    ('#FF1744', 'rgba(255, 23, 68, 0.06)',   'rgba(255, 23, 68, 0.20)'),
+}
+
+def get_text_card_html(label: str, text: str, kind: str) -> str:
+    """Question, gold answer or RAG answer, with its label inside the card like the verdict card.
+    The text is shown exactly as it is (HTML escaped); its line breaks become <br>, because in Markdown
+    a blank line would end the HTML block and cut the card in two."""
+    color, bg, border = TEXT_CARD_COLORS[kind]
+    body = escape(str(text)).replace("\n", "<br>")
+    return (f'<div class="text-card" style="background:{bg}; border:1px solid {border}; border-left:4px solid {color};">'
+            f'<div class="text-card-label" style="color:{color};">{escape(label)}</div>'
+            f'<div class="text-card-body">{body}</div></div>')
 
 
 def get_diagnostics_html(reports: list):
@@ -62,8 +73,9 @@ def get_diagnostics_html(reports: list):
 
     return html_issues
 
-def get_verdict_html(verdict: str, verdict_label: str, pattern_label: str, reason: str) -> str:
-    """Card showing the per-query verdict and error-pattern explanation."""
+def get_verdict_html(verdict: str, verdict_label: str, pattern_label: str, reason: str, metrics=()) -> str:
+    """Card showing the per-query verdict, its RAGAS scores and the error-pattern explanation.
+    metrics: (label, value text, colour, best) for each score; best marks the top one among compared evaluations."""
     color_map = {
         'correct': ('#00E676', 'rgba(0, 230, 118, 0.06)', 'rgba(0, 230, 118, 0.20)'),
         'partial': ('#FFC400', 'rgba(255, 196, 0, 0.06)',  'rgba(255, 196, 0, 0.20)'),
@@ -73,15 +85,23 @@ def get_verdict_html(verdict: str, verdict_label: str, pattern_label: str, reaso
     }
     color, bg, border = color_map.get(verdict, color_map['wrong'])
     pattern_html = f' — {escape(pattern_label)}' if verdict != 'correct' else ''
+    chips = "".join(
+        f'<span class="verdict-metric{" best" if best else ""}">{escape(label)} '
+        f'<strong style="color:{value_color};">{escape(value)}</strong></span>'
+        for label, value, value_color, best in metrics)
+    metrics_html = f'<div class="verdict-metrics">{chips}</div>' if chips else ''
+    # the badge colour already tells the verdict: its label without the leading emoji ("✅ Correct" -> "Correct")
+    badge_text = re.sub(r"^\W+", "", verdict_label)
 
-    return f"""
-    <div class="verdict-card" style="background:{bg}; border:1px solid {border}; border-left:4px solid {color};">
-        <div class="verdict-header">
-            <span class="verdict-title">⚖️ Query Verdict</span>
-            <span class="verdict-badge" style="color:{color}; border-color:{color};">{escape(verdict_label)}{pattern_html}</span>
-        </div>
-        <div class="verdict-reason">{escape(reason)}</div>
-    </div>"""
+    # one line, no blank lines: in Markdown a blank line ends the HTML block (e.g. a reason with line breaks)
+    return (f'<div class="verdict-card" style="background:{bg}; border:1px solid {border}; border-left:4px solid {color};">'
+            '<div class="verdict-header">'
+            '<span class="verdict-title">Query Verdict</span>'
+            f'<span class="verdict-badge" style="color:{color}; border-color:{color};">{escape(badge_text)}{pattern_html}</span>'
+            '</div>'
+            f'{metrics_html}'
+            f'<div class="verdict-reason">{escape(reason).replace("\n", "<br>")}</div>'
+            '</div>')
 
 
 # Error pattern legend: (code, name, description, bibliographic reference)

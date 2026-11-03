@@ -206,6 +206,28 @@ def _fmt_score(v) -> str:
     # metrics not computed by RAGAS are None and shown as N/A
     return "N/A" if v is None else f"{v:.2f}"
 
+# scores shown in the verdict card of a query: (label, report key)
+VERDICT_METRICS = [("Precision", "retrieval_voto"), ("Recall", "recall_voto"), ("Faithfulness", "faithfulness_voto"),
+                   ("Correctness", "correctness_voto"), ("Relevancy", "relevancy_voto")]
+_COLOR_HEX = {"green": "#00E676", "yellow": "#FFC400", "red": "#FF1744", "grey": "#a2a2c0"}
+
+def _verdict_card(rep: dict, best: dict = None) -> str:
+    """Verdict card of a query with its scores. best: top score of each metric among compared evaluations."""
+    metrics = []
+    for label, key in VERDICT_METRICS:
+        v = metric_value(rep, key)
+        is_best = bool(best) and v is not None and best.get(key) == round(v, 2)
+        metrics.append((label, _fmt_score(v), _COLOR_HEX[_value_color(v)], is_best))
+    return dash.get_verdict_html(rep.get('verdict', 'wrong'), rep.get('verdict_label', '❌ Wrong'),
+                                 rep.get('error_cause_label') or rep.get('error_pattern_label', 'Unknown'),
+                                 rep.get('error_reason', ''), metrics)
+
+def _answer_card(rep: dict) -> str:
+    if rep.get('rag_error'):
+        # the RAG failed: there is no answer, show the infrastructure error
+        return dash.get_text_card_html("RAG Error", rep['rag_error'], "error")
+    return dash.get_text_card_html("RAG Answer", rep.get('risposta_rag') or "N/A", "answer")
+
 def _fmt_metric(rep: dict, key: str) -> str:
     # single-query score, N/A when RAGAS did not compute it
     return _fmt_score(metric_value(rep, key))
@@ -810,38 +832,16 @@ with tab_evaluation:
             pattern_suffix = f"  |  cause: {cause}" if rep.get('verdict') != 'correct' and cause else ""
             label = f"{rep['query_id']}  |  {rep['source']}  |  {v_label}{pattern_suffix}  |  Correctness: {_fmt_score(corr)}"
             with st.expander(label):
-                st.markdown("**Question**")
-                st.code(rep['domanda'], language=None)
+                st.markdown(dash.get_text_card_html("Question", rep['domanda'], "question"), unsafe_allow_html=True)
 
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.markdown("**RAG Answer**")
-                    if rep.get('rag_error'):
-                        # the RAG failed: there is no answer, show the infrastructure error
-                        st.error(f"🔌 RAG Error: {rep['rag_error']}")
-                    else:
-                        st.info(rep['risposta_rag'])
+                    st.markdown(_answer_card(rep), unsafe_allow_html=True)
                 with c2:
-                    st.markdown("**Gold Answer**")
-                    st.success(rep['gold'])
+                    st.markdown(dash.get_text_card_html("Gold Answer", rep['gold'], "gold"), unsafe_allow_html=True)
 
-                st.markdown("---")
-                st.markdown("**Ragas Metrics (LLM)**")
-                m1, m2, m3, m4, m5 = st.columns(5)
-                for col, metric_key, metric_label in [(m1, 'retrieval', 'Context Precis.'), (m2, 'recall', 'Context Recall'), (m3, 'faithfulness', 'Faithfulness'), (m4, 'correctness', 'Correctness'), (m5, 'relevancy', 'Relevancy')]:
-                    raw_v = metric_value(rep, f'{metric_key}_voto')
-                    v = round(raw_v, 3) if raw_v is not None else "N/A"
-                    reason = ""  # ragas returns only scores, not reasons unfortunately
-                    with col:
-                        st.markdown(dash.get_judge_box_html(metric_label, v, reason, _value_color(raw_v)), unsafe_allow_html=True)
-
-                # verdict card with error pattern classification
-                st.markdown(dash.get_verdict_html(
-                    rep.get('verdict', 'wrong'),
-                    rep.get('verdict_label', '❌ Wrong'),
-                    rep.get('error_cause_label') or rep.get('error_pattern_label', 'Unknown'),
-                    rep.get('error_reason', ''),
-                ), unsafe_allow_html=True)
+                # verdict, error pattern and RAGAS scores
+                st.markdown(_verdict_card(rep), unsafe_allow_html=True)
 
                 with st.expander("Retrieved Documents"):
                     st.text(rep['docs'])
@@ -1168,51 +1168,27 @@ with tab_explore:
                         selected_qid = selected_query_label.split("  |  ")[0].strip()
                         meta = query_meta[selected_qid]
 
-                        st.markdown("**Question**")
-                        st.code(meta["domanda"], language=None)
-                        st.markdown("**Gold Answer (Ground Truth)**")
-                        st.success(meta["gold"])
+                        st.markdown(dash.get_text_card_html("Question", meta["domanda"], "question"), unsafe_allow_html=True)
+                        st.markdown(dash.get_text_card_html("Gold Answer", meta["gold"], "gold"), unsafe_allow_html=True)
 
                         # side-by-side columns for each evaluation
                         eval_names_with_data = [ev["name"] for ev in selected_for_compare if ev["name"] in query_results_map.get(selected_qid, {})]
+                        compared = [query_results_map[selected_qid][name] for name in eval_names_with_data]
+                        # top score of each metric, marked in the verdict cards; equal scores mark nothing
+                        best = {}
+                        for _, key in VERDICT_METRICS:
+                            scores = {round(v, 2) for v in (metric_value(r, key) for r in compared) if v is not None}
+                            best[key] = max(scores) if len(scores) > 1 else None
                         cols = st.columns(len(eval_names_with_data))
 
                         for col_idx, eval_name in enumerate(eval_names_with_data):
-                            res = query_results_map[selected_qid][eval_name]
+                            res = compared[col_idx]
 
                             with cols[col_idx]:
                                 st.markdown(f"#### 📋 {eval_name}")
-
-                                # metrics mini-cards
-                                metrics_data = [
-                                    ("C.Prec", "retrieval_voto"),
-                                    ("C.Rec", "recall_voto"),
-                                    ("Faith", "faithfulness_voto"),
-                                    ("Corr", "correctness_voto"),
-                                    ("Relev", "relevancy_voto"),
-                                ]
-                                metrics_html = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:0.8rem;">'
-                                for m_label, m_key in metrics_data:
-                                    m_val = metric_value(res, m_key)
-                                    m_text = _fmt_score(m_val)
-                                    m_color = {"green": "#00E676", "yellow": "#FFC400", "red": "#FF1744"}.get(_value_color(m_val), "#a2a2c0")
-                                    metrics_html += f'<span style="background:rgba(255,255,255,0.05);border-radius:8px;padding:4px 8px;font-size:0.75rem;">{m_label}: <strong style="color:{m_color}">{m_text}</strong></span>'
-                                metrics_html += '</div>'
-                                st.markdown(metrics_html, unsafe_allow_html=True)
-
-                                # Verdict card in deep compare
-                                st.markdown(dash.get_verdict_html(
-                                    res.get('verdict', 'wrong'),
-                                    res.get('verdict_label', '❌ Wrong'),
-                                    res.get('error_cause_label') or res.get('error_pattern_label', 'Unknown'),
-                                    res.get('error_reason', ''),
-                                ), unsafe_allow_html=True)
-
-                                st.markdown("**RAG Answer**")
-                                if res.get("rag_error"):
-                                    st.error(f"🔌 RAG Error: {res['rag_error']}")
-                                else:
-                                    st.info(res.get("risposta_rag", "N/A"))
+                                # the answer first, so the answers of all evaluations start at the same height
+                                st.markdown(_answer_card(res), unsafe_allow_html=True)
+                                st.markdown(_verdict_card(res, best), unsafe_allow_html=True)
 
                                 with st.expander("📄 Retrieved Documents"):
                                     st.text(res.get("docs", "No documents available"))
