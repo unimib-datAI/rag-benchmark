@@ -206,7 +206,7 @@ The graphical dashboard offers the highest level of control and visual analysis:
 streamlit run webpage/app.py
 ```
 
-The dashboard starts in the browser (by default at `http://localhost:8501`) and has five tabs (Catalogue, Evaluation, Explore, Setup, API Guide); when opened it lands on the Evaluation tab:
+The dashboard starts in the browser (by default at `http://localhost:8501`) and has five tabs (Catalogue, Evaluation, Explore, Setup, Guides); when opened it lands on the Evaluation tab:
 
 #### 1. "Catalogue" Tab
 - Table of **all supported benchmarks** with description, status (downloaded or not) and number of queries. The search bar filters by **name or description** (not by content).
@@ -244,8 +244,9 @@ The dashboard starts in the browser (by default at `http://localhost:8501`) and 
 - Batch settings (documents and MB per request, pause, maximum number of documents) and a panel with progress and job log.
 - **Clear index** (an expander in each of the two sections) deletes only the records of what has been indexed: the generic RAG one in one section, the DAVE one (collections, uploaded files, jobs) in the other. It does not touch the downloaded files and sends nothing to remote systems: DAVE collections already created stay there, unused, and a new upload creates new ones.
 
-#### 5. "API Guide" Tab
-- Describes the `/ask` and `/ingest` routes that a third-party RAG must expose.
+#### 5. "Guides" Tab
+- **Connect your RAG**: describes the `/ask` and `/ingest` routes that a third-party RAG must expose.
+- **Add your own benchmark**: how to plug a custom test set in through the `Custom/` folder (the section [Creating Your Own Dataset](#creating-your-own-dataset-practical-guide) of this README), with a working example to download.
 
 ---
 
@@ -436,11 +437,12 @@ If you use **DAVE** as your document RAG engine:
 
 ## Creating Your Own Dataset (Practical Guide)
 
+<!-- dataset-guide:start -->
 A custom benchmark lets you evaluate a RAG on your own domain (internal manuals, regulations, technical documentation) instead of the bundled datasets. It consists of two separate artifacts:
 
 | Artifact | Role | Format |
 | :--- | :--- | :--- |
-| **Corpus** | The document collection the RAG indexes and retrieves from | One `(id, text)` pair per document, read by a function in `corpus_sources.py` |
+| **Corpus** | The document collection the RAG indexes and retrieves from | The `.txt` / `.md` files in `documents/`, one document per file |
 | **Question set** | Queries with reference answers (*gold answers*) and the supporting passages | A JSONL file, one query per line |
 
 At evaluation time the RAG only sees the questions and retrieves from the corpus. The gold answers and supporting passages are used exclusively by RAGAS to score the output: they are never sent to the RAG.
@@ -512,6 +514,8 @@ with open("questions.csv", encoding="utf-8") as f, open("Custom/Company Policies
 - **Keep the corpus larger than the supporting passages**: if only the gold documents are indexed, retrieval is trivially easy and Context Precision is inflated. Include distractor documents, ideally similar in topic to the relevant ones.
 - **Start with a small sample**: 10-20 questions are enough to validate the pipeline end to end before scaling up.
 - **Use stable document ids**: ids are used by `/ingest` to detect which documents are already indexed, so renaming files forces a full re-upload.
+
+<!-- dataset-guide:end -->
 
 *(For details on very large corpora, per-question documents and automatic download, see [aggiunta_dataset.md](aggiunta_dataset.md)).*
 

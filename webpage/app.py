@@ -19,6 +19,7 @@ from evaluator import run_evaluation, build_judge_llm, classify_query_verdict, F
 from taxonomy import metric_mean, metric_value, needs_reclassification
 from persistence import save_evaluation, list_evaluations, load_evaluation, delete_evaluation, set_expert_report, EVAL_DIR
 import api_guide
+import dataset_guide
 import corpus_sources
 import answerable
 import ingest_http
@@ -337,7 +338,7 @@ with st.sidebar:
     motore_rag = st.radio(
         "RAG Engine", ENGINES, key="engine_select",
         help="DAVE: the DAVE server configured in the Setup tab. Custom RAG: your own RAG, reached over HTTP "
-             "with the POST /ask and /ingest routes described in the API Guide tab.")
+             "with the POST /ask and /ingest routes described in the Guides tab.")
 
     if "DAVE" in motore_rag:
         _init("w_dave_retrieval_method", dave_settings(st.session_state.cfg)["retrieval_method"])
@@ -494,7 +495,7 @@ if not st.session_state.running and not st.session_state.results:
 # main tabs
 # the Catalogue comes first, but the page opens on the Evaluation tab
 tab_catalogue, tab_setup, tab_evaluation, tab_explore, tab_guide = st.tabs(
-    ["📚 Catalogue", "🛠️ Setup", "🔬 Evaluation", "📊 Explore", "📖 API Guide"], default="🔬 Evaluation")
+    ["📚 Catalogue", "🛠️ Setup", "🔬 Evaluation", "📊 Explore", "📖 Guides"], default="🔬 Evaluation")
 
 with tab_evaluation:
     if not st.session_state.running and st.session_state.get("eval_error"):
@@ -1496,6 +1497,7 @@ with tab_catalogue:
 
     _catalogue()
     _job_panel("extract")
+    st.caption("Have your own test set? **Guides › Add your own benchmark** explains how to plug it in.")
 
 
 def _clear_index(key, systems, text, extra_keys=()):
@@ -1710,7 +1712,7 @@ with tab_setup:
             st.caption("No collections yet: run an ingestion first.")
 
     with setup_rag:
-        st.caption("For any RAG that exposes the POST /ask and /ingest routes described in the API Guide tab. "
+        st.caption("For any RAG that exposes the POST /ask and /ingest routes described in the Guides tab. "
                    "To evaluate it, choose **Custom RAG (HTTP)** in the sidebar.")
 
         # 1. connection
@@ -1837,6 +1839,10 @@ with tab_setup:
         _job_panel("ingest_rag")
 
 
-# api guide tab - how a third-party RAG must be structured
+# guides tab - how to connect a third-party RAG and how to add a custom benchmark
 with tab_guide:
-    api_guide.render(default_url=rag_base_url)
+    guide_rag, guide_dataset = st.tabs(["Connect your RAG", "Add your own benchmark"])
+    with guide_rag:
+        api_guide.render(default_url=rag_base_url)
+    with guide_dataset:
+        dataset_guide.render()

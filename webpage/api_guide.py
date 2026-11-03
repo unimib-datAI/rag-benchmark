@@ -1,4 +1,4 @@
-"""API Guide tab: what a third-party RAG must expose to be evaluated by this tool."""
+"""Guides tab, "Connect your RAG": what a third-party RAG must expose to be evaluated by this tool."""
 import time
 
 import requests
