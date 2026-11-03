@@ -1,6 +1,6 @@
-# SuperRagBench — RAG Evaluation Suite
+# RAG-Hurdles: Evaluation of Existing RAG Systems, Challenge by Challenge, on Published and Custom Benchmarks
 
-**SuperRagBench** is a complete suite for the systematic, standardized and in-depth evaluation of **RAG (Retrieval-Augmented Generation)** systems.
+**RAG-Hurdles** is a complete suite for the systematic, standardized and in-depth evaluation of **RAG (Retrieval-Augmented Generation)** systems.
 It adopts the **LLM-as-a-Judge** paradigm, integrating the metrics of the **Ragas** library to objectively measure the quality of retrieval and answer generation on real-world scenarios, vertical domains and edge cases (*stress tests*).
 
 The project offers both an interactive **Web Dashboard** (Streamlit) for visual analysis, real-time monitoring (TPS, tokens) and multi-run comparison (Radar Chart, metric deltas), and a powerful **terminal CLI** supporting an interactive mode and a headless/batch mode for CI/CD pipelines.
@@ -9,7 +9,7 @@ The project offers both an interactive **Web Dashboard** (Streamlit) for visual 
 
 ## Table of Contents
 
-1. [Why SuperRagBench](#why-superragbench)
+1. [Why RAG-Hurdles](#why-RAG-Hurdles)
 2. [The 6 Included Benchmarks](#the-6-included-benchmarks)
 3. [Evaluation Metrics (RAGAS)](#evaluation-metrics-ragas)
 4. [Automatic Diagnostics & Error Patterns](#automatic-diagnostics--error-patterns)
@@ -28,7 +28,7 @@ The project offers both an interactive **Web Dashboard** (Streamlit) for visual 
 
 ---
 
-## Why SuperRagBench
+## Why RAG-Hurdles
 
 Many RAG systems are evaluated only on simple queries, synthetic contexts or generic domains. In real business applications, document systems must face complex challenges:
 
@@ -39,7 +39,7 @@ Many RAG systems are evaluated only on simple queries, synthetic contexts or gen
 - **Degraded documents (OCR):** paper scans with corrupted tables and altered characters.
 - **Multilingual support:** accurate language understanding on Italian-language texts.
 
-SuperRagBench aggregates reference scientific datasets designed specifically to stress every single link in the RAG chain.
+RAG-Hurdles aggregates reference scientific datasets designed specifically to stress every single link in the RAG chain.
 
 ---
 
@@ -60,7 +60,7 @@ Each benchmark is pre-processed and normalized into **JSONL** format (`Run/Tutto
 
 ## Evaluation Metrics (RAGAS)
 
-The evaluation uses an advanced language model in **LLM-as-a-Judge** mode. SuperRagBench computes the 5 core metrics of the RAGAS library, letting the user choose which ones to compute to optimize time and cost:
+The evaluation uses an advanced language model in **LLM-as-a-Judge** mode. RAG-Hurdles computes the 5 core metrics of the RAGAS library, letting the user choose which ones to compute to optimize time and cost:
 
 | Metric | Scope | Description |
 | :--- | :--- | :--- |
@@ -76,7 +76,7 @@ The evaluation uses an advanced language model in **LLM-as-a-Judge** mode. Super
 
 ## Automatic Diagnostics & Error Patterns
 
-SuperRagBench includes a heuristic engine (`webpage/taxonomy.py`, function `classify_query_verdict`) that analyzes the metrics computed query by query, **with no additional LLM calls**, classifying the state and cause of failure. The thresholds are defined once in `THRESHOLDS` (Correct `0.70`, Partial `0.40`, high/low threshold of the diagnostic metrics `0.50`) and used by the UI, CLI and legend.
+RAG-Hurdles includes a heuristic engine (`webpage/taxonomy.py`, function `classify_query_verdict`) that analyzes the metrics computed query by query, **with no additional LLM calls**, classifying the state and cause of failure. The thresholds are defined once in `THRESHOLDS` (Correct `0.70`, Partial `0.40`, high/low threshold of the diagnostic metrics `0.50`) and used by the UI, CLI and legend.
 
 ### 1. Query Verdict
 - **Correct** (`Answer Correctness >= 0.70`): the answer is correct and aligned with the reference.
@@ -252,7 +252,7 @@ The dashboard starts in the browser (by default at `http://localhost:8501`) and 
 
 ### Option B: Terminal CLI
 
-SuperRagBench includes a complete CLI (`webpage/cli.py`) fully aligned with all the dashboard features, ideal for automation, batch scripts and headless runs.
+RAG-Hurdles includes a complete CLI (`webpage/cli.py`) fully aligned with all the dashboard features, ideal for automation, batch scripts and headless runs.
 
 #### 1. Interactive Mode (Guided Menu)
 ```bash
@@ -339,7 +339,7 @@ To evaluate your own system with the **Local RAG** engine, the server must expos
 
 For each selected benchmark, before asking the questions:
 
-1. SuperRagBench reads the benchmark's **full corpus** (the same one loaded on DAVE by `ingest_dave.py`), not just the gold documents:
+1. RAG-Hurdles reads the benchmark's **full corpus** (the same one loaded on DAVE by `ingest_dave.py`), not just the gold documents:
 
    | Benchmark | Indexed corpus |
    | :--- | :--- |
@@ -539,51 +539,3 @@ Adding a new dataset to the suite takes 3 steps:
    In `webpage/cli.py`, insert the corresponding key in `BENCHMARK_MAP`.
 
 *(For the detailed step-by-step guide and indexing on DAVE, see [aggiunta_dataset.md](aggiunta_dataset.md)).*
-
----
-
-## Project Structure
-
-```text
-SuperRagBench/
-├── README.md                      # General project documentation
-├── requirements.txt               # Python dependencies (Streamlit, RAGAS, LangChain, etc.)
-├── config.json                    # Default configuration for UI and CLI
-├── .env.example                   # Template of the DAVE/Keycloak environment variables
-├── dave_client.py                 # API client for the DAVE engine (tRPC, sessions and streaming)
-├── ingest_dave.py                 # Script to upload and index the corpus on DAVE
-├── corpus_sources.py              # Corpus of each benchmark, shared by the local RAG and DAVE
-├── .dave_collections.json         # Benchmark -> DAVE collection UUID mapping
-├── .dave_docs_cache.json          # Local cache tracking already indexed documents
-├── .dave_upload_jobs.json         # DAVE upload jobs to verify (failed files to re-upload)
-│
-├── webpage/                       # Application core (Dashboard and CLI)
-│   ├── app.py                     # Streamlit web interface (Evaluation and Explore)
-│   ├── cli.py                     # Command-line interface (Interactive and Batch)
-│   ├── evaluator.py               # Evaluation engine, RAG queries and RAGAS computation
-│   ├── taxonomy.py                # Error taxonomy: verdicts, patterns, causes and aggregate diagnostics
-│   ├── persistence.py             # Saving, loading and deleting runs
-│   ├── benchmark_download.py      # Download of raw benchmarks from the official sources (zip)
-│   ├── dashboard.py               # HTML/CSS graphical components, metric cards and error legends
-│   └── style.css                  # Custom dark-mode stylesheet for Streamlit
-│
-├── Custom/                        # Your own datasets, picked up automatically (see "Creating Your Own Dataset")
-│   └── <name>/questions.jsonl + documents/
-│
-├── Run/                           # Normalized datasets and extraction scripts
-│   ├── Tutto_LEGALBENCH.jsonl     # LegalBench-RAG in JSONL format
-│   ├── Tutto_MULTIHOP.jsonl       # MultiHop-RAG in JSONL format
-│   ├── Tutto_CRAG_DAVE.jsonl      # CRAG (Meta) in JSONL format
-│   ├── Tutto_MTRAG_DAVE.jsonl     # Conversational MTRAG in JSONL format
-│   ├── Tutto_OHRBench_DAVE.jsonl  # OHRBench (OCR noise) in JSONL format
-│   ├── Tutto_SQUAD.jsonl          # SQuAD-it in JSONL format
-│   ├── squad_corpus.json          # SQuAD-it corpus (unique paragraphs), generated by extract_squad.py
-│   └── extract_*.py               # Scripts converting raw formats to JSONL
-│
-├── test/                          # Automated tests (taxonomy, RAG errors, DAVE pipeline)
-│
-├── Benchmarks/                    # Original raw datasets (not versioned, see "Download the Benchmarks")
-├── valutazioni/                   # Archived JSON reports with the results of each session
-├── Paper/                         # Reference scientific publications on the datasets and on RAGAS
-└── aggiunta_dataset.md            # Detailed guide to integrate new datasets
-```
