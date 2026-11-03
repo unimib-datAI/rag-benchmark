@@ -32,7 +32,7 @@ import devmode  # DEV MODE
 from dashboard import get_pattern_legend_html
 
 st.set_page_config(
-    page_title="SuperBenchmark · RAG Evaluation",
+    page_title="RAG-Hurdles · RAG Evaluation",
     page_icon="S",
     layout="wide",
     initial_sidebar_state="expanded",

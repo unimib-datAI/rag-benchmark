@@ -1,5 +1,5 @@
 /* ==========================================================================
-   SuperBenchmark - Dark Modern Glassmorphism Theme
+   RAG-Hurdles - Dark Modern Glassmorphism Theme
    ========================================================================== */
 
 /* ── Importazione Font ── */
@@ -9,17 +9,22 @@ html, body, [class*="css"] {
     font-family: 'Inter', sans-serif;
 }
 
+/* less empty space above the title box: Streamlit leaves 6rem by default, just below its (transparent) top bar */
+[data-testid="stMainBlockContainer"] {
+    padding-top: 3.5rem;
+}
+
 /* ── Header Principale ── */
 .header-bar {
     background: linear-gradient(135deg, rgba(30, 30, 46, 0.8) 0%, rgba(42, 42, 74, 0.8) 100%);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
-    padding: 2.5rem 2rem;
+    padding: 1.3rem 2rem;
     border-radius: 16px;
     box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
     border: 1px solid rgba(255, 255, 255, 0.08);
     text-align: center;
-    margin-bottom: 2.5rem;
+    margin-bottom: 1.5rem;
     transition: transform 0.3s ease;
 }
 
@@ -30,15 +35,16 @@ html, body, [class*="css"] {
 .header-bar h1 {
     color: #ffffff;
     font-weight: 800;
-    font-size: 2.8rem;
-    margin: 0 0 0.5rem 0;
+    font-size: 2.3rem;
+    margin: 0 0 0.3rem 0;
+    padding: 0;  /* Streamlit gives every Markdown h1 its own padding above and below */
     letter-spacing: -1px;
     text-shadow: 0 0 20px rgba(108, 92, 231, 0.5);
 }
 
 .header-bar p {
     color: #a2a2c0;
-    font-size: 1.1rem;
+    font-size: 1.05rem;
     font-weight: 300;
     margin: 0;
 }
